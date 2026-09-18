@@ -68,10 +68,14 @@ jobs:
       - name: Bootimg synthetic smoke (UNVERIFIED params gate)
         run: |
           # Synthetic fixture: the point is parameter passing + pack/unpack
-          # round-trip, NOT a bootable image. All real params stay
-          # UNVERIFIED until P0-A measurements land in
-          # boot/stock-boot-params.env.
+          # round-trip, NOT a bootable image. The gate test runs against a
+          # deliberately-UNVERIFIED fixture file; the repo's real params
+          # file carries P0-A CONFIRMED values and must never satisfy
+          # --allow-unverified smoke inputs by accident.
           mkdir -p out/fixture
+          echo 'UNVERIFIED:header_version=4'    >  out/fixture/unverified-params.env
+          echo 'UNVERIFIED:pagesize=4096'        >> out/fixture/unverified-params.env
+          echo 'UNVERIFIED:ramdisk_compression=gzip' >> out/fixture/unverified-params.env
           head -c 65536 /dev/urandom > out/fixture/kernel
           gunzip -c out/initramfs-piano.cpio.gz > out/fixture/ramdisk.cpio
           cp out/initramfs-piano.cpio.gz out/fixture/initramfs.cpio.gz
@@ -93,6 +97,7 @@ jobs:
             --dtb out/fixture/initramfs.cpio.gz \
             --header-version 4 --pagesize 4096 \
             --ramdisk-compression gzip \
+            --params-file out/fixture/unverified-params.env \
             --output out/fixture/boot.img --allow-unverified
           test -f out/fixture/synthetic-boot.img
 
