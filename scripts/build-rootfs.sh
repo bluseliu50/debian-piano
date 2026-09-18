@@ -92,11 +92,11 @@ if [ -z "$FIRMWARE_DIR" ] && [ "$ALLOW_MISSING_FIRMWARE" -ne 1 ]; then
 fi
 
 # --- package list ---------------------------------------------------------
-mapfile -t PKGS < <(sed -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d' \
-    -e 's/[[:space:]]//g' "$PACKAGES_FILE")
+sed -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d' \
+    -e 's/[[:space:]]//g' "$PACKAGES_FILE" > "$REPO_ROOT/.pkglist.$$"
+mapfile -t PKGS < "$REPO_ROOT/.pkglist.$$"
+rm -f "$REPO_ROOT/.pkglist.$$"
 [ "${#PKGS[@]}" -gt 0 ] || die "empty package list in $PACKAGES_FILE"
-INCLUDE=${PKGS[0]}
-for p in "${PKGS[@]:1}"; do INCLUDE+=",$p"; done
 
 OUTDIR=$(realpath -m "$OUTDIR")
 if [ -e "$OUTDIR" ]; then
@@ -106,23 +106,38 @@ mkdir -p "$OUTDIR"
 ROOTFS="$OUTDIR/rootfs"
 mkdir -p "$ROOTFS"
 
-echo "build-rootfs: debootstrap $SUITE $ARCH (host=$HOSTARCH, include=${#PKGS[@]} packages)"
+echo "build-rootfs: phase 1: debootstrap $SUITE $ARCH minbase (host=$HOSTARCH)"
 
-DEBOOTSTRAP_ARGS=(--arch="$ARCH" --include="$INCLUDE" --variant=minbase
-                  --components=main)
+DEBOOTSTRAP_ARGS=(--arch="$ARCH" --variant=minbase --components=main)
 if [ -f /usr/share/keyrings/debian-archive-keyring.gpg ]; then
     DEBOOTSTRAP_ARGS+=(--keyring=/usr/share/keyrings/debian-archive-keyring.gpg)
 fi
 if [ -n "$QEMU" ]; then
     mkdir -p "$ROOTFS/usr/bin"
     cp "$QEMU" "$ROOTFS/usr/bin/qemu-aarch64-static"
-    debootstrap "${DEBOOTSTRAP_ARGS[@]}" \
-        --foreign "$SUITE" "$ROOTFS" "$MIRROR"
-    chroot "$ROOTFS" /debootstrap/debootstrap --second-stage
-    rm -f "$ROOTFS/usr/bin/qemu-aarch64-static"
-else
-    debootstrap "${DEBOOTSTRAP_ARGS[@]}" "$SUITE" "$ROOTFS" "$MIRROR"
 fi
+
+debootstrap "${DEBOOTSTRAP_ARGS[@]}" --foreign "$SUITE" "$ROOTFS" "$MIRROR"
+chroot "$ROOTFS" /debootstrap/debootstrap --second-stage
+rm -f "$ROOTFS/usr/bin/qemu-aarch64-static"
+
+# Phase 2: full package list via the real apt solver inside the chroot.
+# This resolves virtual-package alternatives (e.g. dbus-system-bus)
+# correctly and reports any missing package by name, instead of failing
+# deep inside debootstrap's own resolver.
+echo "build-rootfs: phase 2: installing ${#PKGS[@]} packages via apt"
+mount -t proc proc "$ROOTFS/proc"
+mount --rbind /sys "$ROOTFS/sys"
+mount --rbind /dev "$ROOTFS/dev"
+cleanup_mounts() {
+    umount -l "$ROOTFS/proc" "$ROOTFS/sys" "$ROOTFS/dev" 2>/dev/null || true
+}
+trap cleanup_mounts EXIT
+chroot "$ROOTFS" apt-get update
+chroot "$ROOTFS" env DEBIAN_FRONTEND=noninteractive \
+    apt-get install -y --no-install-recommends "${PKGS[@]}"
+cleanup_mounts
+trap - EXIT
 
 # --- bring-up configuration ----------------------------------------------
 echo "piano" > "$ROOTFS/etc/hostname"
