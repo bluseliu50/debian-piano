@@ -73,8 +73,7 @@ jobs:
           # boot/stock-boot-params.env.
           mkdir -p out/fixture
           head -c 65536 /dev/urandom > out/fixture/kernel
-          ( echo fixture; echo file1 ) | cpio -o -H newc 2>/dev/null \
-              > out/fixture/ramdisk.cpio
+          gunzip -c out/initramfs-piano.cpio.gz > out/fixture/ramdisk.cpio
           cp out/initramfs-piano.cpio.gz out/fixture/initramfs.cpio.gz
           # expect failure without --allow-unverified
           if scripts/build-bootimg.sh \
