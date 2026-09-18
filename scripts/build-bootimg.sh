@@ -94,7 +94,15 @@ unverified=()
 
 check_provenance() {
     # check_provenance <param> <value-passed>
+    #
+    # Entries: CONFIRMED:<p>=<value> must match the passed value;
+    # UNVERIFIED:<p>=... blocks deliverables; POLICY:<p>=operator-choice
+    # accepts any operator value (deliberate choice, e.g. our own cmdline
+    # where the stock image carried none).
     local p="$1" passed="$2" entry status value
+    if grep -qE "^POLICY:$p=operator-choice\$" "$PARAMS_FILE"; then
+        return
+    fi
     entry=$(grep -hE "^(CONFIRMED|UNVERIFIED):$p=" "$PARAMS_FILE" | tail -n1 || true)
     if [ -z "$entry" ]; then
         unverified+=("$p (not recorded in $PARAMS_FILE)")
