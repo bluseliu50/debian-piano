@@ -19,7 +19,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-              debootstrap cpio gzip busybox-static dropbear-bin \
+              debootstrap debian-archive-keyring cpio gzip \
+              busybox-static dropbear-bin \
               lz4 python3 zstd
 
       - name: "Sanity: suite script available"

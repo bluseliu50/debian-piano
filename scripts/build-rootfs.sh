@@ -92,7 +92,8 @@ if [ -z "$FIRMWARE_DIR" ] && [ "$ALLOW_MISSING_FIRMWARE" -ne 1 ]; then
 fi
 
 # --- package list ---------------------------------------------------------
-mapfile -t PKGS < <(grep -vE '^\s*(#|$)' "$PACKAGES_FILE" | tr -d '[:space:]')
+mapfile -t PKGS < <(sed -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d' \
+    -e 's/[[:space:]]//g' "$PACKAGES_FILE")
 [ "${#PKGS[@]}" -gt 0 ] || die "empty package list in $PACKAGES_FILE"
 INCLUDE=${PKGS[0]}
 for p in "${PKGS[@]:1}"; do INCLUDE+=",$p"; done
@@ -109,6 +110,9 @@ echo "build-rootfs: debootstrap $SUITE $ARCH (host=$HOSTARCH, include=${#PKGS[@]
 
 DEBOOTSTRAP_ARGS=(--arch="$ARCH" --include="$INCLUDE" --variant=minbase
                   --components=main)
+if [ -f /usr/share/keyrings/debian-archive-keyring.gpg ]; then
+    DEBOOTSTRAP_ARGS+=(--keyring=/usr/share/keyrings/debian-archive-keyring.gpg)
+fi
 if [ -n "$QEMU" ]; then
     mkdir -p "$ROOTFS/usr/bin"
     cp "$QEMU" "$ROOTFS/usr/bin/qemu-aarch64-static"
