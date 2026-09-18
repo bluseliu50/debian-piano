@@ -43,10 +43,19 @@ jobs:
 
       - name: Build firmware-less rootfs
         run: |
+          set +e
           sudo scripts/build-rootfs.sh \
             --suite trixie \
             --output out/rootfs-build \
             --allow-missing-firmware
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            echo '::group::debootstrap.log (tail)'
+            sudo tail -n 150 out/rootfs-build/rootfs/debootstrap/debootstrap.log || true
+            echo '::endgroup::'
+            exit "$rc"
+          fi
 
       - name: Package rootfs tarball
         run: |
