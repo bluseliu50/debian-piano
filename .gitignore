@@ -1,0 +1,22 @@
+# Build outputs
+out/
+build/
+*.img
+*.tar
+*.tar.gz
+*.tar.zst
+*.cpio
+*.cpio.gz
+
+# Rootfs staging
+rootfs-staging/
+
+# Python
+__pycache__/
+*.pyc
+
+# Editor / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store

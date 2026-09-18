@@ -1,0 +1,96 @@
+name: build
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+              debootstrap cpio gzip busybox-static dropbear-bin \
+              lz4 python3 zstd
+
+      - name: "Sanity: suite script available"
+        run: |
+          test -f /usr/share/debootstrap/scripts/trixie \
+            || { echo "::error::debootstrap on this runner lacks the trixie suite script"; exit 1; }
+
+      - name: Build initramfs
+        run: |
+          mkdir -p out
+          # busybox-static installs /bin/busybox; dropbear-bin provides
+          # /usr/sbin/dropbear + /usr/bin/dropbearkey
+          scripts/build-initramfs.sh \
+            --busybox /bin --dropbear /usr/sbin \
+            --output out/initramfs-piano.cpio.gz
+
+      - name: Build firmware-less rootfs
+        run: |
+          sudo scripts/build-rootfs.sh \
+            --suite trixie \
+            --output out/rootfs-build \
+            --allow-missing-firmware
+
+      - name: Package rootfs tarball
+        run: |
+          sudo tar --numeric-owner -C out/rootfs-build/rootfs \
+              -caf out/rootfs-trixie-arm64-firmwareless.tar.zst .
+          sudo chown -R "$(id -u):$(id -g)" out/rootfs-build
+          cp out/rootfs-build/build-manifest.txt out/
+          cp out/rootfs-build/firmware-manifest.txt out/
+
+      - name: Bootimg synthetic smoke (UNVERIFIED params gate)
+        run: |
+          # Synthetic fixture: the point is parameter passing + pack/unpack
+          # round-trip, NOT a bootable image. All real params stay
+          # UNVERIFIED until P0-A measurements land in
+          # boot/stock-boot-params.env.
+          mkdir -p out/fixture
+          head -c 65536 /dev/urandom > out/fixture/kernel
+          ( echo fixture; echo file1 ) | cpio -o -H newc 2>/dev/null \
+              > out/fixture/ramdisk.cpio
+          cp out/initramfs-piano.cpio.gz out/fixture/initramfs.cpio.gz
+          # expect failure without --allow-unverified
+          if scripts/build-bootimg.sh \
+              --kernel out/fixture/kernel \
+              --ramdisk out/fixture/ramdisk.cpio \
+              --dtb out/fixture/initramfs.cpio.gz \
+              --header-version 4 --pagesize 4096 \
+              --ramdisk-compression gzip \
+              --output out/fixture/should-not-exist.img; then
+            echo "::error::UNVERIFIED gate failed to block a deliverable image"
+            exit 1
+          fi
+          # expect success in synthetic mode with forced prefix
+          scripts/build-bootimg.sh \
+            --kernel out/fixture/kernel \
+            --ramdisk out/fixture/ramdisk.cpio \
+            --dtb out/fixture/initramfs.cpio.gz \
+            --header-version 4 --pagesize 4096 \
+            --ramdisk-compression gzip \
+            --output out/fixture/boot.img --allow-unverified
+          test -f out/fixture/synthetic-boot.img
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: piano-build
+          path: |
+            out/initramfs-piano.cpio.gz
+            out/rootfs-trixie-arm64-firmwareless.tar.zst
+            out/build-manifest.txt
+            out/firmware-manifest.txt
+            out/fixture/synthetic-boot.img
+          retention-days: 7

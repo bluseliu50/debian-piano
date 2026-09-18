@@ -1,0 +1,54 @@
+# rootfs/packages.txt — fixed package list for the piano Debian rootfs.
+# Installed by scripts/build-rootfs.sh via debootstrap --include.
+# One package (or whitespace-free apt argument) per line; '#' starts a comment.
+
+# Init / base
+systemd
+udev
+kmod
+
+# Networking
+network-manager
+openssh-server
+
+# Graphical stack (P2 target desktop)
+phosh
+weston
+
+# Debug tooling
+bash
+coreutils
+util-linux
+less
+vim-tiny
+nano
+file
+strace
+htop
+pciutils
+usbutils
+alsa-utils
+evtest
+i2c-tools
+lm-sensors
+rsync
+wget
+curl
+ca-certificates
+git
+python3
+bzip2
+xz-utils
+zstd
+dosfstools
+e2fsprogs
+kpartx
+parted
+fdisk
+bc
+procps
+psmisc
+tzdata
+locales
+console-setup
+debconf

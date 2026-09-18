@@ -1,0 +1,95 @@
+#!/bin/sh
+# piano initramfs /init — early bring-up debug environment.
+#
+# Scope (v0): mount pseudo-filesystems, bring up the configfs USB NCM
+# gadget with fixed test MACs, start udhcpd + dropbear, and drop to a
+# debug shell on the console. It NEVER writes to any partition and never
+# attempts switch_root until a real root partition has been identified
+# and validated by the operator.
+
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+
+/bin/busybox --install -s /bin 2>/dev/null
+
+rescue() {
+    echo "piano-init: $*"
+    echo "piano-init: dropping to debug shell"
+    exec setsid cttyhack /bin/sh
+}
+
+mkdir -p /proc /sys /dev /run
+mount -t devtmpfs devtmpfs /dev || rescue "devtmpfs mount failed"
+mkdir -p /dev/pts /dev/shm
+mount -t devpts devpts /dev/pts || rescue "devpts mount failed"
+mount -t proc proc /proc || rescue "proc mount failed"
+mount -t sysfs sysfs /sys || rescue "sysfs mount failed"
+mount -t configfs configfs /sys/kernel/config || rescue "configfs mount failed (CONFIG_USB_CONFIGFS needed)"
+
+# --- USB NCM gadget -------------------------------------------------------
+# Fixed test MACs: locally administered, collision-free on the point-to-point
+# USB link. Host side gets an address via DHCP (udhcpd below).
+GADGET=/sys/kernel/config/usb_gadget/piano
+mkdir -p "$GADGET" || rescue "cannot create usb_gadget/piano in configfs"
+
+echo 0x18d1 > "$GADGET/idVendor"   # Google
+echo 0xd001 > "$GADGET/idProduct"  # generic NCM debug gadget
+echo 0x0100 > "$GADGET/bcdDevice"
+echo 0x0200 > "$GADGET/bcdUSB"
+
+mkdir -p "$GADGET/strings/0x409"
+echo "piano-linux"      > "$GADGET/strings/0x409/manufacturer"
+echo "piano NCM debug"  > "$GADGET/strings/0x409/product"
+echo "0123456789"       > "$GADGET/strings/0x409/serialnumber"
+
+mkdir -p "$GADGET/functions/ncm.usb0" || rescue "cannot create ncm.usb0 function (CONFIG_USB_CONFIGFS_NCM needed)"
+
+# Fixed test MAC addresses (host-facing / gadget-facing)
+echo "02:11:22:33:44:55" > "$GADGET/functions/ncm.usb0/dev_addr"
+echo "02:66:77:88:99:aa" > "$GADGET/functions/ncm.usb0/host_addr"
+
+mkdir -p "$GADGET/configs/b.1/strings/0x409"
+echo "ncm" > "$GADGET/configs/b.1/strings/0x409/configuration"
+echo 500   > "$GADGET/configs/b.1/MaxPower"
+ln -sf "$GADGET/functions/ncm.usb0" "$GADGET/configs/b.1"
+
+UDC=""
+for u in /sys/class/udc/*; do [ -e "$u" ] && UDC=${u##*/} && break; done
+[ -n "$UDC" ] || rescue "no UDC found (USB DWC3 not up?)"
+echo "$UDC" > "$GADGET/UDC" || rescue "cannot bind gadget to UDC $UDC"
+
+# --- Network on usb0 ------------------------------------------------------
+ip link set usb0 up || rescue "cannot up usb0"
+ip addr add 10.42.0.2/24 dev usb0 || rescue "cannot address usb0"
+
+# DHCP server for the host side (fixed pool, static fallback documented)
+cat > /tmp/udhcpd.conf <<EOF
+interface usb0
+start 10.42.0.10
+end 10.42.0.20
+opt dns 10.42.0.2
+opt subnet 255.255.255.0
+opt router 10.42.0.2
+opt lease 3600
+EOF
+touch /var/lib/misc/udhcpd.leases 2>/dev/null || mkdir -p /var/lib/misc && touch /var/lib/misc/udhcpd.leases
+udhcpd /tmp/udhcpd.conf || echo "piano-init: udhcpd failed (host can use static 10.42.0.1/24)"
+
+# --- dropbear -------------------------------------------------------------
+mkdir -p /etc/dropbear
+if [ ! -f /etc/dropbear/dropbear_ed25519_host_key ]; then
+    dropbearkey -t ed25519 -f /etc/dropbear/dropbear_ed25519_host_key \
+        || rescue "dropbearkey failed"
+fi
+mkdir -p /root/.ssh
+# Debug access: authorized keys may be injected by editing this file from
+# the initramfs build or via the debug shell.
+dropbear -E -p 22 || echo "piano-init: dropbear failed to start"
+
+echo
+echo "piano-init: debug environment up."
+echo "  USB NCM : host 10.42.0.1/24 (DHCP pool 10.42.0.10-20) <-> gadget 10.42.0.2"
+echo "  SSH     : dropbear on 10.42.0.2:22 (root, authorized_keys under /root/.ssh)"
+echo "  Console : this shell. Umount/rw NOTHING is written to partitions."
+echo
+
+exec setsid cttyhack /bin/sh
