@@ -26,6 +26,7 @@ jobs:
           url=https://raw.githubusercontent.com/rhysd/actionlint/main
           url=$url/scripts/download-actionlint.bash
           bash <(curl -fsSL "$url")
+          ./actionlint -version
 
       - name: sh -n syntax checks
         run: |
@@ -49,4 +50,4 @@ jobs:
       - name: YAML checks
         run: |
           yamllint -d relaxed .github/workflows/
-          actionlint
+          ./actionlint

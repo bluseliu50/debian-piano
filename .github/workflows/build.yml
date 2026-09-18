@@ -30,10 +30,14 @@ jobs:
       - name: Build initramfs
         run: |
           mkdir -p out
-          # busybox-static installs /bin/busybox; dropbear-bin provides
-          # /usr/sbin/dropbear + /usr/bin/dropbearkey
+          # busybox-static installs /bin/busybox. Ubuntu splits dropbear
+          # binaries across /usr/sbin (dropbear) and /usr/bin (dropbearkey):
+          # stage them into one directory for the strict script interface.
+          mkdir -p /tmp/dropbear-staging
+          ln -sf /usr/sbin/dropbear /tmp/dropbear-staging/dropbear
+          ln -sf /usr/bin/dropbearkey /tmp/dropbear-staging/dropbearkey
           scripts/build-initramfs.sh \
-            --busybox /bin --dropbear /usr/sbin \
+            --busybox /bin --dropbear /tmp/dropbear-staging \
             --output out/initramfs-piano.cpio.gz
 
       - name: Build firmware-less rootfs
