@@ -70,7 +70,7 @@ jobs:
           # Synthetic fixture: the point is parameter passing + pack/unpack
           # round-trip, NOT a bootable image. The gate test runs against a
           # deliberately-UNVERIFIED fixture file; the repo's real params
-          # file carries P0-A CONFIRMED values and must never satisfy
+          # file carries CONFIRMED values from the stock ROM and must never satisfy
           # --allow-unverified smoke inputs by accident.
           mkdir -p out/fixture
           echo 'UNVERIFIED:header_version=4'    >  out/fixture/unverified-params.env
