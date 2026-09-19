@@ -65,7 +65,7 @@ be mistaken for flashable artifacts.
 - `out/rootfs/` — rootfs tree; `out/rootfs.build-manifest` — suite, package
   versions, firmware manifest
 - `out/initramfs-piano.cpio.gz` — debug initramfs
-- `out/boot.img` — boot image (only after P0-A confirmed parameters)
+- `out/boot.img` — boot image (only after stock-ROM-confirmed parameters)
 
 ## Local dependencies
 

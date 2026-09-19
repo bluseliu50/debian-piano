@@ -16,7 +16,7 @@
 #
 # Deliverable gate: every parameter placed into the image must be
 # CONFIRMED in the params file (default boot/stock-boot-params.env,
-# evidence: P0-A measurement of the stock fastboot ROM). Any UNVERIFIED
+# evidence: offline measurement of the stock fastboot ROM). Any UNVERIFIED
 # parameter blocks a deliverable image. --allow-unverified permits
 # synthetic smoke artifacts only, and forces a 'synthetic-' output prefix.
 
@@ -126,7 +126,7 @@ if [ "${#unverified[@]}" -gt 0 ]; then
     echo "build-bootimg: UNVERIFIED boot parameters present:" >&2
     printf '  - %s\n' "${unverified[@]}" >&2
     if [ "$ALLOW_UNVERIFIED" -ne 1 ]; then
-        die "refusing to build a deliverable image from UNVERIFIED parameters (P0-A measurement required; see boot/stock-boot-params.env)"
+        die "refusing to build a deliverable image from UNVERIFIED parameters (stock-ROM measurement required; see boot/stock-boot-params.env)"
     fi
     case "$(basename "$OUTPUT")" in
         synthetic-*) : ;;

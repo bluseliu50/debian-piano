@@ -4,7 +4,7 @@
 # Usage:
 #   FIRMWARE_DIR=DIR ./build-firmware-deb.sh --version V --output DIR
 #
-# Reads the extraction produced by the P0-A ROM parse and installs it as
+# Reads a local firmware extraction from a stock-ROM unpack and installs it as
 # /lib/firmware/** inside a firmware-xiaomi-piano deb. Fails on an empty
 # or missing input; never writes placeholder firmware.
 

@@ -4,7 +4,7 @@ Packaging interface for the piano proprietary firmware set
 (adsp/cdsp/venus/GPU zap/WLAN/BT/touch/keyboard/audio).
 
 **No firmware blobs live in this repository.** The helper below reads a
-local extraction directory (produced by the P0-A ROM parse, e.g.
+local extraction directory (e.g.
 `local/firmware/` in the umbrella workspace) and produces a
 `firmware-xiaomi-piano` deb for installation into rootfs images.
 
