@@ -83,13 +83,27 @@ fi
 mkdir -p /root/.ssh
 # Debug access: authorized keys may be injected by editing this file from
 # the initramfs build or via the debug shell.
-dropbear -E -p 22 || echo "piano-init: dropbear failed to start"
+dropbear -E -B -p 22 || echo "piano-init: dropbear failed to start"
 
 echo
 echo "piano-init: debug environment up."
 echo "  USB NCM : host 10.42.0.1/24 (DHCP pool 10.42.0.10-20) <-> gadget 10.42.0.2"
 echo "  SSH     : dropbear on 10.42.0.2:22 (root, authorized_keys under /root/.ssh)"
-echo "  Console : this shell. Umount/rw NOTHING is written to partitions."
+echo "  Tests   : run 'piano-tests' for the interactive menu"
 echo
+
+# Load the touch stack: the SPI controller first, then the touch driver.
+# The driver defers its own probe until the DSI panel is prepared, so a
+# defer message in dmesg at this point is expected on first boots.
+modprobe spi-geni-qcom 2>/dev/null \
+    || echo "piano-init: spi-geni-qcom not loaded (check modules in initramfs)"
+modprobe nt36532e_ts 2>/dev/null \
+    || echo "piano-init: nt36532e_ts not loaded (check modules in initramfs)"
+
+# Non-interactive boot smoke report (probe status + evidence tarball), kept
+# in the background so the console stays interactive.
+if command -v piano-tests >/dev/null 2>&1; then
+    ( sleep 5; piano-tests --auto > /run/boot-smoke.log 2>&1 ) &
+fi
 
 exec setsid cttyhack /bin/sh
