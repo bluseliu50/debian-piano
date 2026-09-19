@@ -1,13 +1,34 @@
 #!/usr/bin/env bash
-# build-initramfs.sh — assemble the piano debug initramfs.
+# build-initramfs.sh — assemble the piano debug/test initramfs.
 #
 # Usage:
 #   scripts/build-initramfs.sh --busybox DIR --dropbear DIR --output FILE
+#       [--authorized-keys FILE | --generate-access-key FILE]
+#       [--root-password PASS]   (empty string = blank password login)
+#       [--module FILE]... [--kernel-version VER]
+#       [--firmware-dir DIR]      (copies DIR/novatek/*.bin)
+#       [--compress none|gzip]    (default gzip)
 #
 # DIR arguments point at directories that contain the binaries:
 #   --busybox  DIR with a static `busybox`
 #   --dropbear DIR with `dropbear` and `dropbearkey` (dropbearmulti works
 #              if `dropbearkey` is symlinked next to it)
+#   --dropbear-tree DIR  alternative: copy a full dropbear userland tree
+#              (binaries + shared-library closure, as staged by
+#              scripts/fetch-arm64-tools.sh) verbatim into the initramfs
+#
+# Extra content (test image):
+#   --authorized-keys FILE  installs FILE as /root/.ssh/authorized_keys
+#   --generate-access-key F generates a fresh ed25519 key pair with the
+#                           host ssh-keygen; the public half is installed
+#                           into the initramfs and the PRIVATE key is
+#                           written to F (mode 0600) for the operator.
+#   --module FILE           installs a kernel module into
+#                           /lib/modules/<--kernel-version>/
+#   --firmware-dir DIR      copies DIR/novatek/*.bin to /lib/firmware/novatek/
+#
+# Any executable under initramfs/tests/ is installed into /usr/bin
+# (piano-tests, piano-touch-test, piano-display-test, piano-collect).
 #
 # Fails (non-zero) when tools are missing, the NCM gadget function cannot
 # be represented in the generated image (init sanity), or the cpio output
@@ -16,54 +37,103 @@
 set -euo pipefail
 
 usage() {
-    sed -n '2,12p' "$0"; exit 2
+    sed -n '2,25p' "$0"; exit 2
 }
 
 die() {
-    echo "build-initramfs: error: $*" >&2
+    echo "build-initramfs: $*" >&2
     exit 1
 }
 
 BUSYBOX_DIR=""
 DROPBEAR_DIR=""
+DROPBEAR_TREE=""
 OUTPUT=""
+AUTHORIZED_KEYS=""
+GENERATE_KEY_OUT=""
+ROOT_PASSWORD=""
+ROOT_PASSWORD_SET=0
+MODULES=()
+KERNEL_VERSION=""
+FIRMWARE_DIR=""
+COMPRESS=gzip
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --busybox)  BUSYBOX_DIR="${2:?}";  shift 2 ;;
-        --dropbear) DROPBEAR_DIR="${2:?}"; shift 2 ;;
-        --output)   OUTPUT="${2:?}";       shift 2 ;;
-        -h|--help)  usage ;;
-        *)          usage ;;
+        --busybox)             BUSYBOX_DIR=${2-}; shift 2 ;;
+        --dropbear)            DROPBEAR_DIR=${2-}; shift 2 ;;
+        --dropbear-tree)       DROPBEAR_TREE=${2-}; shift 2 ;;
+        --output)              OUTPUT=${2-}; shift 2 ;;
+        --authorized-keys)     AUTHORIZED_KEYS=${2-}; shift 2 ;;
+        --generate-access-key) GENERATE_KEY_OUT=${2-}; shift 2 ;;
+        --module)              MODULES+=("${2-}"); shift 2 ;;
+        --kernel-version)      KERNEL_VERSION=${2-}; shift 2 ;;
+        --root-password)       ROOT_PASSWORD=${2-}; ROOT_PASSWORD_SET=1; shift 2 ;;
+        --firmware-dir)        FIRMWARE_DIR=${2-}; shift 2 ;;
+        --compress)            COMPRESS=${2-}; shift 2 ;;
+        -h|--help)             usage ;;
+        *) die "unknown option: $1" ;;
     esac
 done
 
-[ -n "$BUSYBOX_DIR" ]  || usage
-[ -n "$DROPBEAR_DIR" ] || usage
+[ -n "$BUSYBOX_DIR" ] || usage
 [ -n "$OUTPUT" ]       || usage
+if [ -z "$DROPBEAR_DIR" ] && [ -z "$DROPBEAR_TREE" ]; then
+    usage
+fi
+
+case "$COMPRESS" in
+    none|gzip) ;;
+    *) die "--compress must be none or gzip (got: $COMPRESS)" ;;
+esac
+
+if [ "${#MODULES[@]}" -gt 0 ] && [ -z "$KERNEL_VERSION" ]; then
+    die "--module requires --kernel-version (e.g. 5.15.0-piano)"
+fi
 
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 INIT_SRC="$REPO_ROOT/initramfs/init"
+TESTS_SRC="$REPO_ROOT/initramfs/tests"
 
 missing=()
 command -v cpio   >/dev/null 2>&1 || missing+=(cpio)
 command -v gzip   >/dev/null 2>&1 || missing+=(gzip)
 command -v sha256sum >/dev/null 2>&1 || missing+=(sha256sum)
+[ "$COMPRESS" = gzip ] && ! command -v gzip >/dev/null 2>&1 && missing+=(gzip)
 [ -x "$BUSYBOX_DIR/busybox" ] || missing+=("$BUSYBOX_DIR/busybox (static busybox)")
-[ -x "$DROPBEAR_DIR/dropbear" ] || missing+=("$DROPBEAR_DIR/dropbear")
-[ -x "$DROPBEAR_DIR/dropbearkey" ] || missing+=("$DROPBEAR_DIR/dropbearkey")
+if [ -n "$DROPBEAR_TREE" ]; then
+    [ -x "$DROPBEAR_TREE/usr/sbin/dropbear" ] || missing+=("$DROPBEAR_TREE/usr/sbin/dropbear")
+    [ -x "$DROPBEAR_TREE/usr/bin/dropbearkey" ] || missing+=("$DROPBEAR_TREE/usr/bin/dropbearkey")
+    [ -e "$DROPBEAR_TREE/lib/ld-linux-aarch64.so.1" ] || missing+=("$DROPBEAR_TREE/lib/ld-linux-aarch64.so.1 (runtime closure)")
+else
+    [ -x "$DROPBEAR_DIR/dropbear" ] || missing+=("$DROPBEAR_DIR/dropbear")
+    [ -x "$DROPBEAR_DIR/dropbearkey" ] || missing+=("$DROPBEAR_DIR/dropbearkey")
+fi
 [ -f "$INIT_SRC" ] || missing+=("$INIT_SRC (initramfs/init)")
+[ -n "$AUTHORIZED_KEYS" ] && [ ! -s "$AUTHORIZED_KEYS" ] && missing+=("$AUTHORIZED_KEYS (authorized keys)")
+[ -n "$FIRMWARE_DIR" ] && [ ! -d "$FIRMWARE_DIR" ] && missing+=("$FIRMWARE_DIR (firmware dir)")
+for m in "${MODULES[@]:-}"; do
+    [ -n "$m" ] && [ ! -s "$m" ] && missing+=("$m (kernel module)")
+done
+if [ "${#MODULES[@]}" -gt 0 ] && ! command -v depmod >/dev/null 2>&1; then
+    missing+=(depmod)
+fi
+if [ -n "$GENERATE_KEY_OUT" ] && ! command -v ssh-keygen >/dev/null 2>&1; then
+    missing+=(ssh-keygen)
+fi
+if [ "$ROOT_PASSWORD_SET" = 1 ] && [ -n "$ROOT_PASSWORD" ] \
+        && ! command -v openssl >/dev/null 2>&1; then
+    missing+=(openssl)
+fi
 
 if [ "${#missing[@]}" -gt 0 ]; then
-    echo "build-initramfs: missing prerequisites:" >&2
-    printf '  - %s\n' "${missing[@]}" >&2
+    printf 'build-initramfs: missing: %s\n' "${missing[*]}" >&2
     exit 1
 fi
 
 # busybox must be static (no interpreter deps inside initramfs)
 if ldd "$BUSYBOX_DIR/busybox" >/dev/null 2>&1; then
-    echo "build-initramfs: error: $BUSYBOX_DIR/busybox is dynamically linked; a static build is required" >&2
-    exit 1
+    die "busybox at $BUSYBOX_DIR/busybox is dynamically linked; a static build is required"
 fi
 
 STAGING=$(mktemp -d "${TMPDIR:-/tmp}/piano-initramfs.XXXXXX")
@@ -78,14 +148,81 @@ mkdir -p \
 
 install -m 0755 "$INIT_SRC" "$STAGING/init"
 install -m 0755 "$BUSYBOX_DIR/busybox" "$STAGING/bin/busybox"
-install -m 0755 "$DROPBEAR_DIR/dropbear"     "$STAGING/usr/sbin/dropbear"
-install -m 0755 "$DROPBEAR_DIR/dropbearkey"  "$STAGING/usr/bin/dropbearkey"
+if [ -n "$DROPBEAR_TREE" ]; then
+    cp -a "$DROPBEAR_TREE/usr" "$STAGING/"
+    cp -a "$DROPBEAR_TREE/lib" "$STAGING/"
+else
+    install -m 0755 "$DROPBEAR_DIR/dropbear"     "$STAGING/usr/sbin/dropbear"
+    install -m 0755 "$DROPBEAR_DIR/dropbearkey"  "$STAGING/usr/bin/dropbearkey"
+fi
 
 # Minimal command symlinks; /init does `busybox --install -s` at runtime,
 # but the earliest init lines need these before that install runs.
-for cmd in sh mount mkdir ln echo cat ls; do
+for cmd in sh mount mkdir ln echo cat ls modprobe; do
     ln -sf /bin/busybox "$STAGING/bin/$cmd"
 done
+
+# --- test suite -------------------------------------------------------------
+if [ -d "$TESTS_SRC" ]; then
+    for t in "$TESTS_SRC"/*; do
+        [ -f "$t" ] || continue
+        install -m 0755 "$t" "$STAGING/usr/bin/$(basename "$t")"
+    done
+fi
+
+# --- SSH access -------------------------------------------------------------
+if [ -n "$AUTHORIZED_KEYS" ]; then
+    install -m 0600 "$AUTHORIZED_KEYS" "$STAGING/root/.ssh/authorized_keys"
+elif [ -n "$GENERATE_KEY_OUT" ]; then
+    [ -e "$GENERATE_KEY_OUT" ] && die "refusing to overwrite existing key $GENERATE_KEY_OUT"
+    ssh-keygen -t ed25519 -N '' -C piano-test-image -f "$GENERATE_KEY_OUT" -q
+    chmod 0600 "$GENERATE_KEY_OUT"
+    install -m 0600 "$GENERATE_KEY_OUT.pub" "$STAGING/root/.ssh/authorized_keys"
+fi
+
+# Account database + optional root password auth. The password field of
+# /etc/passwd holds a SHA-512 crypt hash (verified by the staged libcrypt
+# through dropbear); an EMPTY --root-password sets an empty field, which
+# dropbear's -B flag turns into "press enter to log in" on the USB link.
+PW_FIELD=x
+if [ "$ROOT_PASSWORD_SET" = 1 ]; then
+    if [ -n "$ROOT_PASSWORD" ]; then
+        PW_FIELD=$(openssl passwd -6 "$ROOT_PASSWORD")
+        [ -n "$PW_FIELD" ] || die "openssl passwd failed"
+    else
+        PW_FIELD=""
+    fi
+fi
+printf 'root:%s:0:0:root:/root:/bin/sh\n' "$PW_FIELD" > "$STAGING/etc/passwd"
+printf 'root:x:0:\n' > "$STAGING/etc/group"
+
+# --- kernel modules ---------------------------------------------------------
+if [ "${#MODULES[@]}" -gt 0 ]; then
+    MODDIR="$STAGING/lib/modules/$KERNEL_VERSION"
+    mkdir -p "$MODDIR"
+    for m in "${MODULES[@]}"; do
+        [ -n "$m" ] || continue
+        rel=${m##*out/}
+        d="$MODDIR/$(dirname "$rel")"
+        mkdir -p "$d"
+        install -m 0644 "$m" "$d/$(basename "$m")"
+    done
+    depmod -b "$STAGING" "$KERNEL_VERSION" \
+        || die "depmod failed for $KERNEL_VERSION"
+fi
+
+# --- touch firmware ---------------------------------------------------------
+if [ -n "$FIRMWARE_DIR" ]; then
+    n_fw=0
+    if compgen -G "$FIRMWARE_DIR/novatek/*.bin" >/dev/null; then
+        mkdir -p "$STAGING/lib/firmware/novatek"
+        for f in "$FIRMWARE_DIR"/novatek/*.bin; do
+            install -m 0644 "$f" "$STAGING/lib/firmware/novatek/"
+            n_fw=$((n_fw + 1))
+        done
+    fi
+    echo "build-initramfs: installed $n_fw novatek firmware blob(s)"
+fi
 
 # Sanity: the init script must carry the NCM gadget path. A missing or
 # renamed function here means the debug network cannot come up — refuse
@@ -95,10 +232,16 @@ grep -q 'functions/ncm\.usb0' "$STAGING/init" \
 grep -q 'usb_gadget/piano' "$STAGING/init" \
     || die "init does not create the usb_gadget/piano gadget"
 
-( cd "$STAGING" && find . -print0 | cpio --null -o --format=newc ) \
-    | gzip -9 > "$OUTPUT"
+( cd "$STAGING" && find . -print0 | cpio --null -o --format=newc ) > "$OUTPUT.cpio" \
+    || die "cpio failed"
+
+case "$COMPRESS" in
+    gzip) gzip -9 -c "$OUTPUT.cpio" > "$OUTPUT" ;;
+    none) mv "$OUTPUT.cpio" "$OUTPUT" ;;
+esac
+rm -f "$OUTPUT.cpio"
 
 [ -s "$OUTPUT" ] || die "cpio output is empty: $OUTPUT"
 
-echo "build-initramfs: wrote $OUTPUT ($(wc -c < "$OUTPUT") bytes)"
+echo "build-initramfs: wrote $OUTPUT ($(wc -c < "$OUTPUT") bytes, compress=$COMPRESS)"
 sha256sum "$OUTPUT"

@@ -1,0 +1,72 @@
+#!/bin/sh
+# piano-tests — menu orchestrator for the piano first-light test image.
+#
+# Usage: piano-tests            interactive menu
+#        piano-tests --auto     non-interactive smoke report (used at boot)
+
+MODE=menu
+[ "${1-}" = "--auto" ] && MODE=auto
+
+banner() {
+    echo
+    echo "=============================================================="
+    echo " piano first-light tests (RAM boot, nothing is written to disk)"
+    echo "=============================================================="
+}
+
+status_line() { printf '  %-34s %s\n' "$1" "$2"; }
+
+probe_report() {
+    echo "--- probe status ---"
+    if [ -e /proc/nvt_thp_status ]; then
+        status_line "touch driver (nt36532e_ts)" "PROBED"
+    else
+        status_line "touch driver (nt36532e_ts)" "not probed (panel follower or SPI)"
+    fi
+    if [ -e /dev/fb0 ]; then
+        status_line "display fbdev (/dev/fb0)" "PRESENT $(cat /sys/class/graphics/fb0/virtual_size 2>/dev/null)"
+    else
+        status_line "display fbdev (/dev/fb0)" "missing"
+    fi
+    if ip link show usb0 >/dev/null 2>&1; then
+        status_line "USB-NCM network (usb0)" "UP $(ip -o addr show usb0 2>/dev/null | awk '{print $4}')"
+    else
+        status_line "USB-NCM network (usb0)" "down"
+    fi
+    for p in /sys/class/power_supply/*; do
+        [ -d "$p" ] || continue
+        status_line "power: $(basename "$p")" \
+            "$(cat "$p/status" 2>/dev/null) $(cat "$p/capacity" 2>/dev/null)%"
+    done
+}
+
+if [ "$MODE" = auto ]; then
+    banner
+    probe_report
+    echo "--- running piano-collect ---"
+    piano-collect
+    echo
+    echo "boot smoke report saved; run 'piano-tests' for the interactive menu."
+    exit 0
+fi
+
+while :; do
+    banner
+    probe_report
+    echo
+    echo "  1) touch test   (stream touch frames, 30s — touch the screen)"
+    echo "  2) display test (colour fields + noise on the panel)"
+    echo "  3) collect evidence tarball"
+    echo "  4) dmesg tail (touch/display/usb)"
+    echo "  q) quit"
+    printf 'choice> '
+    read -r choice
+    case "$choice" in
+        1) piano-touch-test ;;
+        2) piano-display-test --bars --noise --hold 2 ;;
+        3) piano-collect ;;
+        4) dmesg | grep -iE 'nv|touch|panel|dsi|mdss|drm|usb|dwc|pmic|fg|batt' | tail -40 ;;
+        q|Q) break ;;
+        *) echo "unknown choice" ;;
+    esac
+done

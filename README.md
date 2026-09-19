@@ -40,6 +40,43 @@ scripts/build-bootimg.sh \
     --dtb out/sm8750-xiaomi-piano.dtb \
     --header-version 4 --pagesize 4096 --ramdisk-compression lz4 \
     --output out/boot.img
+
+# RAM-boot first-light test image (display + touch + USB-NCM SSH):
+# fetches static arm64 busybox + a dropbear userland tree from Debian,
+# then builds and round-trip-verifies five boot-image variants.
+scripts/fetch-arm64-tools.sh
+scripts/build-test-bootimg.sh \
+    --kernel-dir ../linux-piano/out \
+    --firmware-dir ../local/firmware \
+    --output-dir out/test-image
+```
+
+### Test image contents
+
+`build-test-bootimg.sh` assembles a self-contained RAM-boot test image from
+the `piano/test-bringup` kernel (display pipeline + NT37801 panel + NT36532E
+touch). The initramfs carries:
+
+- USB-NCM gadget network (host 10.42.0.1/24, device 10.42.0.2) with
+  dropbear SSH; an ed25519 access key is generated per build (or pass
+  `--authorized-keys`), `ssh -i out/test-image/piano-test-ssh-ed25519
+  root@10.42.0.2`. Optionally add root password auth with
+  `--root-password PASS` (SHA-512 hash in the initramfs /etc/passwd);
+  `--root-password ''` sets a BLANK password — SSH has no true
+  "no-auth" mode, but with dropbear's `-B` a blank password means
+  "press enter to log in". These are only reachable over the USB
+  point-to-point link.
+- `piano-tests` (menu + boot smoke report), `piano-touch-test`
+  (streams/decodes NT36532E THP touch frames), `piano-display-test`
+  (DRM state + colour-field/noise painting through /dev/fb0) and
+  `piano-collect` (evidence tarball for scp)
+- the `spi-geni-qcom` + `nt36532e_ts` modules and the four stock Novatek
+  touch firmware blobs (via `--firmware-dir`)
+
+Every image is verified by an `unpack_bootimg` read-back before the build
+succeeds; parameters come from `boot/stock-boot-params.env` (stock-ROM
+CONFIRMED values only). Boot order and safety rules: see the umbrella
+repo's device bring-up runbook.
 ```
 
 ### Firmware-less mode
