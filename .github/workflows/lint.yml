@@ -31,13 +31,13 @@ jobs:
       - name: sh -n syntax checks
         run: |
           sh -n initramfs/init
-          for f in scripts/*.sh firmware-xiaomi-piano/*.sh; do
+          for f in scripts/*.sh; do
             bash -n "$f"
           done
 
       - name: shellcheck
         run: |
-          shellcheck scripts/*.sh firmware-xiaomi-piano/*.sh
+          shellcheck scripts/*.sh
           # initramfs/init targets busybox ash (POSIX sh)
           shellcheck -s sh initramfs/init || {
             echo "::warning::initramfs/init has shellcheck findings under 'sh' mode";

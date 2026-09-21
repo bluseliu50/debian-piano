@@ -6,7 +6,7 @@ Debian rootfs, initramfs and boot-image builder for the **Xiaomi Pad 8 Pro**
 Everything here is written from scratch and licensed MIT, except the
 AOSP mkbootimg tools vendored under `mkbootimg/` (Apache-2.0, provenance in
 `mkbootimg/README.md`). No proprietary firmware blobs are stored in this
-repository — firmware is always injected from a local directory at build
+repository — the RAM-boot test image picks firmware up from a local directory at build
 time.
 
 ## Repository layout
@@ -20,14 +20,12 @@ time.
 | `rootfs/packages.txt` | Fixed package list for the rootfs |
 | `boot/stock-boot-params.env` | Boot-image parameter provenance (CONFIRMED/UNVERIFIED) |
 | `mkbootimg/` | Vendored AOSP `mkbootimg.py`, `unpack_bootimg.py`, `repack_bootimg.py` |
-| `firmware-xiaomi-piano/` | Firmware packaging helper (reads `local/firmware/`, never stores blobs) |
 
 ## Build entry points
 
 ```sh
 # Rootfs (run as root; native arm64, or cross with qemu-user + binfmt)
-sudo scripts/build-rootfs.sh --suite trixie --output out/rootfs \
-    [--firmware-dir /path/to/local/firmware] [--allow-missing-firmware]
+sudo scripts/build-rootfs.sh --suite trixie --output out/rootfs
 
 # Initramfs (needs busybox and dropbear binaries)
 scripts/build-initramfs.sh \
@@ -71,7 +69,7 @@ touch). The initramfs carries:
   (DRM state + colour-field/noise painting through /dev/fb0) and
   `piano-collect` (evidence tarball for scp)
 - the `spi-geni-qcom` + `nt36532e_ts` modules and the four stock Novatek
-  touch firmware blobs (via `--firmware-dir`)
+  touch firmware blobs (test image only, via `--firmware-dir`)
 
 Every image is verified by an `unpack_bootimg` read-back before the build
 succeeds; parameters come from `boot/stock-boot-params.env` (stock-ROM
@@ -79,13 +77,15 @@ CONFIRMED values only). Boot order and safety rules: see the umbrella
 repo's device bring-up runbook.
 ```
 
-### Firmware-less mode
+### Device firmware (open design question)
 
-Without `--firmware-dir`, `build-rootfs.sh` refuses to build unless
-`--allow-missing-firmware` is passed. In that mode the rootfs ships without
-any device firmware, and the fact is recorded inside the image
-(`/usr/share/xiaomi-piano/firmware-missing`) and in the build manifest.
-Placeholders are never substituted for real firmware.
+`build-rootfs.sh` does **not** install device firmware, and the earlier
+`firmware-xiaomi-piano` packaging helper has been removed: blobs never
+enter this repository, and a local-directory injection scheme cannot work
+for CI-built full images. The distribution design (how proprietary blobs
+reach reproducible images) will be decided with the maintainer when the
+Debian-on-device phase starts. Until then the rootfs is firmware-less by
+design, and only the local-built RAM-boot test image carries firmware.
 
 ### Boot-image verification gate
 
@@ -100,7 +100,7 @@ be mistaken for flashable artifacts.
 ## Outputs
 
 - `out/rootfs/` — rootfs tree; `out/rootfs.build-manifest` — suite, package
-  versions, firmware manifest
+  versions
 - `out/initramfs-piano.cpio.gz` — debug initramfs
 - `out/boot.img` — boot image (only after stock-ROM-confirmed parameters)
 
@@ -123,5 +123,5 @@ all times. See the umbrella repo safety rules before touching a device.
 
 GitHub Actions workflows run natively on arm64 runners
 (`ubuntu-24.04-arm`): `lint` (shellcheck / sh -n / py_compile / yamllint /
-actionlint) and `build` (firmware-less rootfs, initramfs, synthetic boot
+actionlint) and `build` (rootfs without firmware, initramfs, synthetic boot
 image smoke). Both are required checks on `main`.
