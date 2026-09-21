@@ -110,6 +110,11 @@ modprobe hci_uart 2>/dev/null \
 
 # WLAN: ath12k probes the peach PCI function on pcie0; the MHI firmware
 # download takes a few seconds, so keep it off the interactive path.
+# pcie0's own probe (built-in) defers until the QMP PCIe phy module is
+# present — load it right away, the deferred-probe retry then brings up
+# the controller, and ath12k follows once the PCI function enumerates.
+modprobe phy-qcom-qmp-pcie 2>/dev/null \
+    || echo "piano-init: pcie phy not loaded (pcie0/WLAN stay deferred)"
 ( sleep 8
   modprobe ath12k_wifi7 2>/dev/null || echo "piano-init: ath12k_wifi7 not loaded"
   modprobe ath12k 2>/dev/null
@@ -134,6 +139,12 @@ modprobe qcom_q6v5_pas 2>/dev/null \
     || echo "piano-init: qcom_q6v5_pas not loaded (ADSP/CDSP stay down)"
 modprobe pmic_glink 2>/dev/null \
     || echo "piano-init: pmic_glink not loaded"
+# Type-C data role / orientation / SS-lane mux events arrive through the
+# pmic_glink altmode client; without it the gadget still enumerates (dwc3
+# role-switch defaults to peripheral, usb2 paths work) but stays at USB2
+# speed and never sees role/orientation changes.
+modprobe pmic_glink_altmode 2>/dev/null \
+    || echo "piano-init: pmic_glink_altmode not loaded (no Type-C role/orientation)"
 modprobe qcom_battmgr 2>/dev/null \
     || echo "piano-init: qcom_battmgr not loaded (no battery telemetry)"
 
