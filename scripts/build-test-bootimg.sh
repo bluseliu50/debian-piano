@@ -83,6 +83,7 @@ WLAN_BT_MODS=(
     "$KERNEL_DIR/net/qrtr/qrtr.ko"
     "$KERNEL_DIR/net/qrtr/qrtr-mhi.ko"
     "$KERNEL_DIR/drivers/bus/mhi/host/mhi.ko"
+    "$KERNEL_DIR/drivers/phy/qualcomm/phy-qcom-qmp-pcie.ko"
     "$KERNEL_DIR/drivers/net/wireless/ath/ath.ko"
     "$KERNEL_DIR/drivers/net/wireless/ath/ath12k/ath12k.ko"
     "$KERNEL_DIR/drivers/net/wireless/ath/ath12k/wifi7/ath12k_wifi7.ko"
