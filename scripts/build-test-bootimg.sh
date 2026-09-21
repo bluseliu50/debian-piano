@@ -94,6 +94,45 @@ WLAN_BT_MODS=(
 )
 WLAN_BT_FW_DIR=$FIRMWARE_DIR/wifi-bt
 
+# ADSP/CDSP remoteproc + pmic-glink battery + audioreach sound stack.
+# modprobe pulls dependencies via modules.dep; the explicit list is what
+# gets packed into the initramfs.
+AUDIO_BATT_MODS=(
+    "$KERNEL_DIR/net/qrtr/qrtr.ko"
+    "$KERNEL_DIR/drivers/soc/qcom/pmic_glink.ko"
+    "$KERNEL_DIR/drivers/soc/qcom/pmic_glink_altmode.ko"
+    "$KERNEL_DIR/drivers/soc/qcom/apr.ko"
+    "$KERNEL_DIR/drivers/remoteproc/qcom_q6v5.ko"
+    "$KERNEL_DIR/drivers/remoteproc/qcom_q6v5_pas.ko"
+    "$KERNEL_DIR/drivers/misc/fastrpc.ko"
+    "$KERNEL_DIR/drivers/power/supply/qcom_battmgr.ko"
+    "$KERNEL_DIR/sound/core/snd.ko"
+    "$KERNEL_DIR/sound/core/snd-pcm.ko"
+    "$KERNEL_DIR/sound/soc/snd-soc-core.ko"
+    "$KERNEL_DIR/sound/soc/codecs/snd-soc-lpass-macro-common.ko"
+    "$KERNEL_DIR/sound/soc/codecs/snd-soc-lpass-rx-macro.ko"
+    "$KERNEL_DIR/sound/soc/codecs/snd-soc-lpass-tx-macro.ko"
+    "$KERNEL_DIR/sound/soc/codecs/snd-soc-lpass-wsa-macro.ko"
+    "$KERNEL_DIR/sound/soc/codecs/snd-soc-lpass-va-macro.ko"
+    "$KERNEL_DIR/sound/soc/codecs/snd-soc-wcd939x.ko"
+    "$KERNEL_DIR/sound/soc/codecs/snd-soc-wcd939x-sdw.ko"
+    "$KERNEL_DIR/sound/soc/codecs/snd-soc-wsa884x.ko"
+    "$KERNEL_DIR/drivers/usb/typec/mux/wcd939x-usbss.ko"
+    "$KERNEL_DIR/sound/soc/qcom/qdsp6/snd-q6dsp-common.ko"
+    "$KERNEL_DIR/sound/soc/qcom/qdsp6/snd-q6apm.ko"
+    "$KERNEL_DIR/sound/soc/qcom/qdsp6/q6apm-dai.ko"
+    "$KERNEL_DIR/sound/soc/qcom/qdsp6/q6apm-lpass-dais.ko"
+    "$KERNEL_DIR/sound/soc/qcom/qdsp6/q6prm.ko"
+    "$KERNEL_DIR/sound/soc/qcom/qdsp6/q6prm-clocks.ko"
+    "$KERNEL_DIR/sound/soc/qcom/snd-soc-qcom-common.ko"
+    "$KERNEL_DIR/sound/soc/qcom/snd-soc-qcom-sdw.ko"
+    "$KERNEL_DIR/sound/soc/qcom/snd-soc-sc8280xp.ko"
+    "$KERNEL_DIR/drivers/soundwire/soundwire-bus.ko"
+    "$KERNEL_DIR/drivers/soundwire/soundwire-qcom.ko"
+)
+AUDIO_BATT_FW_SRC=$FIRMWARE_DIR/non-hlos/image
+PD_LOCATOR_SRC=$REPO_ROOT/initramfs/pd-locator/piano-pd-locator.c
+
 missing=()
 command -v python3 >/dev/null 2>&1 || missing+=(python3)
 command -v lz4     >/dev/null 2>&1 || missing+=(lz4)
@@ -109,6 +148,12 @@ for m in "${WLAN_BT_MODS[@]}"; do
 done
 [ -d "$WLAN_BT_FW_DIR/ath12k" ] || missing+=("$WLAN_BT_FW_DIR/ath12k (ath12k firmware tree)")
 [ -d "$WLAN_BT_FW_DIR/qca" ]   || missing+=("$WLAN_BT_FW_DIR/qca (QCA BT firmware)")
+for m in "${AUDIO_BATT_MODS[@]}"; do
+    [ -s "$m" ] || missing+=("$m (missing or empty)")
+done
+[ -f "$AUDIO_BATT_FW_SRC/adsp.mdt" ] || missing+=("$AUDIO_BATT_FW_SRC/adsp.mdt (ADSP firmware)")
+[ -f "$AUDIO_BATT_FW_SRC/cdsp.mdt" ] || missing+=("$AUDIO_BATT_FW_SRC/cdsp.mdt (CDSP firmware)")
+[ -s "$PD_LOCATOR_SRC" ] || missing+=("$PD_LOCATOR_SRC (pd-locator source)")
 if [ "${#missing[@]}" -gt 0 ]; then
     printf 'build-test-bootimg: missing: %s\n' "${missing[*]}" >&2
     exit 1
@@ -145,6 +190,7 @@ trap 'rm -rf "$WORK"' EXIT
 TOOLS="$REPO_ROOT/out/arm64-tools"
 DROPBEAR_TREE="$TOOLS/dropbear/tree"
 IW_TREE="$TOOLS/iw/tree"
+APLAY_TREE="$TOOLS/aplay/tree"
 if [ -z "$BUSYBOX_DIR" ]; then
     if [ ! -x "$TOOLS/busybox/busybox" ] || [ ! -x "$DROPBEAR_TREE/usr/sbin/dropbear" ] \
        || [ ! -x "$IW_TREE/usr/sbin/iw" ]; then
@@ -154,6 +200,8 @@ if [ -z "$BUSYBOX_DIR" ]; then
 fi
 [ -x "$DROPBEAR_TREE/usr/sbin/dropbear" ] || die "no dropbear tree (run $FETCH_TOOLS)"
 [ -x "$IW_TREE/usr/sbin/iw" ] || die "no iw tree (run $FETCH_TOOLS)"
+[ -x "$APLAY_TREE/usr/bin/aplay" ] || die "no aplay tree (run $FETCH_TOOLS)"
+command -v python3 >/dev/null 2>&1 || die "python3 needed (test tone generation)"
 
 
 # --- normalize firmware layout ---------------------------------------------
@@ -164,6 +212,19 @@ fi
 mkdir -p "$WORK/firmware/novatek"
 cp "$FIRMWARE_DIR"/odm/firmware/novatek_nt36532_*.bin "$WORK/firmware/novatek/"
 cp -a "$WLAN_BT_FW_DIR/qca" "$WLAN_BT_FW_DIR/ath12k" "$WORK/firmware/"
+
+# remoteproc firmware: stock NON-HLOS image names adsp/cdsp segments as
+# <name>.mdt + <name>.bNN; the DTS asks for qcom/sm8750/<name>.mbn, and the
+# kernel MDT loader resolves <name>.mbn + <name>.bNN automatically.
+mkdir -p "$WORK/firmware/qcom/sm8750"
+for f in "$AUDIO_BATT_FW_SRC"/adsp* "$AUDIO_BATT_FW_SRC"/cdsp*; do
+    [ -f "$f" ] || continue
+    base=$(basename "$f")
+    case "$base" in
+        *.mdt) install -m 0644 "$f" "$WORK/firmware/qcom/sm8750/${base%.mdt}.mbn" ;;
+        *)     install -m 0644 "$f" "$WORK/firmware/qcom/sm8750/$base" ;;
+    esac
+done
 
 # --- initramfs --------------------------------------------------------------
 KEY_OUT=""
@@ -186,13 +247,38 @@ else
     KEY_ARGS=(--authorized-keys "$AUTHORIZED_KEYS")
 fi
 
+# --- piano-pd-locator cross-build -------------------------------------------
+# Static aarch64 build against the staged musl sysroot (fetched on demand by
+# the tools script). crt1.o + libc.a direct link: pure C, no compiler-rt
+# builtins needed, so no libgcc is required.
+SYSROOT="$TOOLS/musl-sysroot"
+if [ ! -f "$SYSROOT/usr/lib/libc.a" ]; then
+    echo "build-test-bootimg: musl sysroot missing, fetching tools..."
+    "$FETCH_TOOLS" >/dev/null || die "fetch-arm64-tools failed"
+fi
+command -v clang >/dev/null 2>&1 || missing+=(clang)
+command -v ld.lld >/dev/null 2>&1 || missing+=(ld.lld)
+PD_LOCATOR_BIN="$WORK/piano-pd-locator"
+clang --target=aarch64-linux-musl --sysroot="$SYSROOT" -Os -Wall -Wextra \
+    -fno-stack-protector -fno-asynchronous-unwind-tables \
+    -c "$PD_LOCATOR_SRC" -o "$WORK/pd-locator.o" \
+    || die "pd-locator compile failed"
+ld.lld -o "$PD_LOCATOR_BIN" --sysroot="$SYSROOT" -static \
+    "$SYSROOT/usr/lib/crt1.o" "$WORK/pd-locator.o" "$SYSROOT/usr/lib/libc.a" \
+    || die "pd-locator link failed"
+file "$PD_LOCATOR_BIN" | grep -q 'ARM aarch64' \
+    || die "pd-locator did not build as an arm64 ELF"
+echo "build-test-bootimg: built piano-pd-locator ($(stat -c%s "$PD_LOCATOR_BIN") bytes)"
+
 echo "build-test-bootimg: building initramfs (kernel $KVER)"
 WLAN_BT_MOD_ARGS=()
-for m in "${WLAN_BT_MODS[@]}"; do
+for m in "${WLAN_BT_MODS[@]}" "${AUDIO_BATT_MODS[@]}"; do
     WLAN_BT_MOD_ARGS+=(--module "$m")
 done
 "$INITRAMFS_BUILDER" \
     --busybox "$BUSYBOX_DIR" --dropbear-tree "$DROPBEAR_TREE" --iw-tree "$IW_TREE" \
+    --pd-locator "$PD_LOCATOR_BIN" \
+    --aplay-tree "$APLAY_TREE" \
     --output "$WORK/initramfs.cpio" --compress none \
     --module "$TS_MOD" --module "$SPI_MOD" --kernel-version "$KVER" \
     "${WLAN_BT_MOD_ARGS[@]}" \
@@ -206,6 +292,8 @@ fi
 
 "$INITRAMFS_BUILDER" \
     --busybox "$BUSYBOX_DIR" --dropbear-tree "$DROPBEAR_TREE" --iw-tree "$IW_TREE" \
+    --pd-locator "$PD_LOCATOR_BIN" \
+    --aplay-tree "$APLAY_TREE" \
     --output "$WORK/initramfs.cpio.gz" --compress gzip \
     --module "$TS_MOD" --module "$SPI_MOD" --kernel-version "$KVER" \
     "${WLAN_BT_MOD_ARGS[@]}" \
@@ -239,10 +327,12 @@ python3 "$MKBOOTIMG" \
     --header_version "$HEADER_VERSION" --pagesize "$PAGESIZE" \
     "${GEOM[@]}" -o "$OUTPUT_DIR/piano-test-boot.img"
 
-# A2: v4 vendor_boot with PLATFORM initramfs + our DTB + the cmdline
+# A2: v4 vendor_boot with PLATFORM initramfs + our DTB + the cmdline.
+# The ramdisk is the gzipped cpio: the vendor_ramdisk entry just carries
+# bytes, and the kernel's initramfs unpacker handles gzip (RD_GZIP=y).
 python3 "$MKBOOTIMG" \
     --vendor_boot "$OUTPUT_DIR/piano-test-vendor_boot.img" \
-    --vendor_ramdisk "$WORK/initramfs.cpio" \
+    --vendor_ramdisk "$WORK/initramfs.cpio.gz" \
     --vendor_bootconfig "$WORK/bootconfig.empty" \
     --dtb "$DTB" \
     --header_version "$HEADER_VERSION" --pagesize "$PAGESIZE" \

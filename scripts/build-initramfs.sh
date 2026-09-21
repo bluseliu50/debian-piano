@@ -49,6 +49,8 @@ BUSYBOX_DIR=""
 DROPBEAR_DIR=""
 DROPBEAR_TREE=""
 IW_TREE=""
+PD_LOCATOR=""
+APLAY_TREE=""
 AUTHORIZED_KEYS=""
 GENERATE_KEY_OUT=""
 ROOT_PASSWORD=""
@@ -64,6 +66,8 @@ while [ $# -gt 0 ]; do
         --dropbear)            DROPBEAR_DIR=${2-}; shift 2 ;;
         --dropbear-tree)       DROPBEAR_TREE=${2-}; shift 2 ;;
         --iw-tree)             IW_TREE=${2-}; shift 2 ;;
+        --pd-locator)          PD_LOCATOR=${2-}; shift 2 ;;
+        --aplay-tree)          APLAY_TREE=${2-}; shift 2 ;;
         --output)              OUTPUT=${2-}; shift 2 ;;
         --authorized-keys)     AUTHORIZED_KEYS=${2-}; shift 2 ;;
         --generate-access-key) GENERATE_KEY_OUT=${2-}; shift 2 ;;
@@ -157,6 +161,43 @@ else
     install -m 0755 "$DROPBEAR_DIR/dropbearkey"  "$STAGING/usr/bin/dropbearkey"
 fi
 
+# --- aplay + audio test tone ---------------------------------------------------
+if [ -n "$APLAY_TREE" ]; then
+    [ -x "$APLAY_TREE/usr/bin/aplay" ] || die "no aplay binary at $APLAY_TREE/usr/bin/aplay"
+    ( cd "$APLAY_TREE" && tar -cf - usr ) | ( cd "$STAGING" && tar -xf - )
+    echo "build-initramfs: installed aplay from $APLAY_TREE"
+fi
+
+# Test tone: 3 s of 440 Hz + 880 Hz alternating sine, 16 kHz mono 16-bit PCM,
+# generated deterministically here (python3 struct/math, no external file).
+mkdir -p "$STAGING/usr/share"
+python3 - "$STAGING/usr/share/piano-test-tone.wav" <<'WAVEOF' || die "tone generation failed"
+import math, struct, sys
+rate = 16000
+frames = rate * 3
+with open(sys.argv[1], "wb") as f:
+    f.write(b"RIFF")
+    f.write(struct.pack("<I", 36 + frames * 2))
+    f.write(b"WAVEfmt ")
+    f.write(struct.pack("<IHHIIHH", 16, 1, 1, rate, rate * 2, 2, 16))
+    f.write(b"data")
+    f.write(struct.pack("<I", frames * 2))
+    for i in range(frames):
+        freq = 440 if (i // rate) % 2 == 0 else 880
+        v = int(12000 * math.sin(2 * math.pi * freq * i / rate))
+        f.write(struct.pack("<h", v))
+WAVEOF
+echo "build-initramfs: generated 3 s audio test tone"
+
+# --- piano-pd-locator (our static SERVREG_LOC daemon) ------------------------
+if [ -n "$PD_LOCATOR" ]; then
+    [ -s "$PD_LOCATOR" ] || die "pd-locator binary missing: $PD_LOCATOR"
+    file "$PD_LOCATOR" | grep -q 'ARM aarch64' \
+        || die "staged pd-locator is not an arm64 ELF: $PD_LOCATOR"
+    install -m 0755 "$PD_LOCATOR" "$STAGING/usr/sbin/piano-pd-locator"
+    echo "build-initramfs: installed piano-pd-locator from $PD_LOCATOR"
+fi
+
 # --- iw (WLAN nl80211 client) ------------------------------------------------
 if [ -n "$IW_TREE" ]; then
     [ -x "$IW_TREE/usr/sbin/iw" ] || die "no iw binary at $IW_TREE/usr/sbin/iw"
@@ -208,12 +249,17 @@ printf 'root:x:0:\n' > "$STAGING/etc/group"
 if [ "${#MODULES[@]}" -gt 0 ]; then
     MODDIR="$STAGING/lib/modules/$KERNEL_VERSION"
     mkdir -p "$MODDIR"
+    STRIP=llvm-strip
+    command -v "$STRIP" >/dev/null 2>&1 || STRIP="strip"
     for m in "${MODULES[@]}"; do
         [ -n "$m" ] || continue
         rel=${m##*out/}
         d="$MODDIR/$(dirname "$rel")"
         mkdir -p "$d"
-        install -m 0644 "$m" "$d/$(basename "$m")"
+        # Strip debug sections: the kernel builds modules unstripped and the
+        # raw set can be an order of magnitude larger than needed.
+        "$STRIP" --strip-debug -o "$d/$(basename "$m")" "$m" \
+            || install -m 0644 "$m" "$d/$(basename "$m")"
     done
     depmod -b "$STAGING" "$KERNEL_VERSION" \
         || die "depmod failed for $KERNEL_VERSION"
@@ -245,6 +291,14 @@ if [ -n "$FIRMWARE_DIR" ]; then
         mkdir -p "$STAGING/lib/firmware/ath12k"
         cp -a "$FIRMWARE_DIR"/ath12k/. "$STAGING/lib/firmware/ath12k/"
         echo "build-initramfs: installed ath12k WLAN firmware tree ($(find "$FIRMWARE_DIR/ath12k" -type f | wc -l) files)"
+    fi
+
+    # remoteproc firmware: adsp/cdsp segments staged by build-test-bootimg.sh
+    # as qcom/sm8750/{adsp,cdsp}[._dtb].{mbn,bXX}; copied verbatim.
+    if [ -d "$FIRMWARE_DIR/qcom/sm8750" ]; then
+        mkdir -p "$STAGING/lib/firmware/qcom/sm8750"
+        cp -a "$FIRMWARE_DIR"/qcom/sm8750/. "$STAGING/lib/firmware/qcom/sm8750/"
+        echo "build-initramfs: installed remoteproc firmware tree ($(find "$FIRMWARE_DIR/qcom/sm8750" -type f | wc -l) files)"
     fi
 fi
 

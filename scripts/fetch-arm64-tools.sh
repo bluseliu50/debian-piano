@@ -6,6 +6,10 @@
 # Downloads arm64 Debian packages, extracts them with ar(1) + tar(1) (no
 # dpkg needed) and stages a ready-to-embed userland tree:
 #
+#   DIR/musl-sysroot/        Alpine musl-dev (aarch64) sysroot used to
+#                            cross-compile the static piano-pd-locator
+#                            (crt1.o + libc.a only; toolchain material,
+#                            never shipped into any repository)
 #   DIR/iw/tree/             iw + its shared-library closure (libnl-3,
 #                            libnl-genl-3, libc) — used by the WLAN test
 #   DIR/dropbear/tree/       full dropbear userland tree:
@@ -49,7 +53,7 @@ MIRROR=http://deb.debian.org/debian
 
 # dropbear-bin runtime closure (trixie arm64 Depends, measured 2026-09-19):
 # libc6 additionally depends on libgcc-s1.
-PKGS=(busybox-static dropbear-bin libc6 libcrypt1 libtomcrypt1 libtommath1 zlib1g libgcc-s1 iw libnl-3-200 libnl-genl-3-200)
+PKGS=(busybox-static dropbear-bin libc6 libcrypt1 libtomcrypt1 libtommath1 zlib1g libgcc-s1 iw libnl-3-200 libnl-genl-3-200 alsa-utils libasound2t64)
 
 missing=()
 command -v curl >/dev/null 2>&1 || missing+=(curl)
@@ -131,6 +135,41 @@ ln -sfn usr/lib "$TREE/lib"
 mkdir -p "$OUTDIR/dropbear"
 ln -sf tree/usr/sbin/dropbear    "$OUTDIR/dropbear/dropbear"
 ln -sf tree/usr/bin/dropbearkey  "$OUTDIR/dropbear/dropbearkey"
+
+# --- stage aplay tree ---------------------------------------------------------
+# aplay (ALSA playback for the audio test tone) is dynamically linked against
+# libasound + libc; staged like the iw tree.
+APLAY_TREE="$OUTDIR/aplay/tree"
+rm -rf "$APLAY_TREE"
+mkdir -p "$APLAY_TREE/usr"
+[ -s "$WORK/x/alsa-utils/usr/bin/aplay" ] || die "the alsa-utils package does not contain usr/bin/aplay"
+( cd "$WORK/x/alsa-utils" && tar -cf - usr/bin ) | ( cd "$APLAY_TREE" && tar -xf - )
+for p in libasound2t64 libc6 libgcc-s1; do
+    ( cd "$WORK/x/$p" && tar -cf - usr/lib ) | ( cd "$APLAY_TREE" && tar -xf - ) 2>/dev/null \
+        || ( cd "$WORK/x/$p" && tar -cf - lib ) | ( cd "$APLAY_TREE" && tar -xf - )
+done
+file "$APLAY_TREE/usr/bin/aplay" | grep -q 'ARM aarch64' \
+    || die "staged aplay is not arm64"
+ln -sfn usr/lib "$APLAY_TREE/lib"
+[ -e "$APLAY_TREE/lib/ld-linux-aarch64.so.1" ] || die "no arm64 loader reachable at aplay tree /lib"
+mkdir -p "$OUTDIR/aplay"
+ln -sf tree/usr/bin/aplay "$OUTDIR/aplay/aplay"
+
+# --- stage musl sysroot (for the static pd-locator cross-build) ---------------
+# Pinned Alpine musl-dev; downloaded from the official Alpine CDN, extracted
+# under the gitignored tools dir. This is compiler material, not shipped code.
+MUSL_VER=1.2.6-r3
+SYSROOT="$OUTDIR/musl-sysroot"
+if [ ! -f "$SYSROOT/usr/lib/libc.a" ] || [ ! -f "$SYSROOT/usr/lib/crt1.o" ]; then
+    echo "fetch-arm64-tools: fetching musl-dev $MUSL_VER (aarch64) for the sysroot..."
+    curl -fsSL "https://dl-cdn.alpinelinux.org/alpine/edge/main/aarch64/musl-dev-$MUSL_VER.apk" \
+        -o "$WORK/musl-dev.apk" || die "cannot download musl-dev"
+    rm -rf "$SYSROOT"
+    mkdir -p "$SYSROOT"
+    tar -xzf "$WORK/musl-dev.apk" -C "$SYSROOT" || die "cannot extract musl-dev (not gzip?)"
+    [ -f "$SYSROOT/usr/lib/libc.a" ] || die "musl-dev apk lacks usr/lib/libc.a"
+    [ -f "$SYSROOT/usr/lib/crt1.o" ] || die "musl-dev apk lacks usr/lib/crt1.o"
+fi
 
 # --- stage iw tree -----------------------------------------------------------
 # iw (WLAN nl80211 client for the scan test) is dynamically linked against
