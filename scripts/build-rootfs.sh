@@ -3,17 +3,17 @@
 #
 # Usage:
 #   scripts/build-rootfs.sh --suite SUITE --output DIR \
-#       [--firmware-dir DIR] [--userspace-dir DIR] [--allow-missing-firmware]
+#       [--userspace-dir DIR]
 #
 # - Architecture is fixed to arm64.
 # - On non-arm64 hosts, qemu-aarch64-static + binfmt registration are
 #   required and checked.
 # - Fails with a list of missing prerequisites (tools, root, network,
 #   packages); never produces a half-finished rootfs silently.
-# - Without --firmware-dir the build refuses to run unless
-#   --allow-missing-firmware is given (the image then records
-#   /usr/share/xiaomi-piano/firmware-missing). Placeholders are never
-#   written in place of real firmware.
+# - Device firmware is NOT installed by this script. The firmware
+#   distribution design (how blobs reach CI-built images without
+#   entering git) is deferred to the Debian-on-device phase and will be
+#   decided with the maintainer before full images are produced.
 
 set -euo pipefail
 
@@ -29,17 +29,13 @@ die() {
 ARCH=arm64
 SUITE=""
 OUTDIR=""
-FIRMWARE_DIR=""
 USERSPACE_DIR=""
-ALLOW_MISSING_FIRMWARE=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --suite)                 SUITE="${2:?}"; shift 2 ;;
         --output)                OUTDIR="${2:?}"; shift 2 ;;
-        --firmware-dir)          FIRMWARE_DIR="${2:?}"; shift 2 ;;
         --userspace-dir)         USERSPACE_DIR="${2:?}"; shift 2 ;;
-        --allow-missing-firmware) ALLOW_MISSING_FIRMWARE=1; shift ;;
         -h|--help) usage ;;
         *) usage ;;
     esac
@@ -78,18 +74,12 @@ fi
 if ! curl -fsI --max-time 15 "$MIRROR/" >/dev/null 2>&1; then
     missing+=("network access to $MIRROR")
 fi
-if [ -n "$FIRMWARE_DIR" ] && [ ! -d "$FIRMWARE_DIR" ]; then
-    missing+=("--firmware-dir $FIRMWARE_DIR (not a directory)")
-fi
 if [ "${#missing[@]}" -gt 0 ]; then
     echo "build-rootfs: missing prerequisites:" >&2
     printf '  - %s\n' "${missing[@]}" >&2
     exit 1
 fi
 
-if [ -z "$FIRMWARE_DIR" ] && [ "$ALLOW_MISSING_FIRMWARE" -ne 1 ]; then
-    die "no --firmware-dir given; pass --allow-missing-firmware for an explicitly firmware-less rootfs"
-fi
 
 # --- package list ---------------------------------------------------------
 sed -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d' \
@@ -166,24 +156,11 @@ chroot "$ROOTFS" systemctl enable ssh.service || true
 chroot "$ROOTFS" systemctl enable NetworkManager.service || true
 
 # --- firmware -------------------------------------------------------------
-mkdir -p "$ROOTFS/usr/share/xiaomi-piano" "$ROOTFS/lib/firmware"
-FIRMWARE_MANIFEST="$OUTDIR/firmware-manifest.txt"
-: > "$FIRMWARE_MANIFEST"
-if [ -n "$FIRMWARE_DIR" ]; then
-    echo "build-rootfs: injecting firmware from $FIRMWARE_DIR"
-    cp -a "$FIRMWARE_DIR"/. "$ROOTFS/lib/firmware/"
-    ( cd "$ROOTFS/lib/firmware" && find . -type f -print0 ) \
-        | ( cd "$ROOTFS/lib/firmware" && xargs -0 sha256sum ) \
-        >> "$FIRMWARE_MANIFEST" || true
-else
-    echo "build-rootfs: firmware-less rootfs (--allow-missing-firmware)"
-    cat > "$ROOTFS/usr/share/xiaomi-piano/firmware-missing" <<EOF
-This rootfs was built WITHOUT device firmware (--allow-missing-firmware).
-No placeholder firmware was installed. Inject real firmware from
-local/firmware/ via scripts/build-rootfs.sh --firmware-dir DIR.
-EOF
-    echo "MISSING: all (built with --allow-missing-firmware)" >> "$FIRMWARE_MANIFEST"
-fi
+# Deliberately not installed: the firmware distribution design (getting
+# proprietary blobs into images without committing them) is deferred to
+# the Debian-on-device phase. The RAM-boot test image carries its own
+# firmware via build-test-bootimg.sh --firmware-dir (local builds only).
+mkdir -p "$ROOTFS/lib/firmware"
 
 # --- userspace packages ---------------------------------------------------
 if [ -n "$USERSPACE_DIR" ]; then
@@ -204,7 +181,7 @@ fi
     echo "arch=$ARCH"
     echo "built=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     echo "hostarch=$HOSTARCH"
-    echo "firmware=$([ -n "$FIRMWARE_DIR" ] && echo "$FIRMWARE_DIR" || echo "missing(-allow-missing-firmware)")"
+    echo "firmware=not-included (distribution design TBD)"
     # shellcheck disable=SC2016  # ${Package}/${Version} must reach dpkg-query literally
     chroot "$ROOTFS" dpkg-query -W -f='${Package} ${Version}\n' | sort
 } > "$OUTDIR/build-manifest.txt"
