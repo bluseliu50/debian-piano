@@ -28,6 +28,25 @@ probe_report() {
     else
         status_line "display fbdev (/dev/fb0)" "missing"
     fi
+    if [ -e /sys/class/bluetooth/hci0 ]; then
+        status_line "bluetooth (hci_qca)" "hci0 $(cat /sys/class/bluetooth/hci0/address 2>/dev/null)"
+    else
+        status_line "bluetooth (hci_qca)" "no hci0"
+    fi
+    n_phy=$(ls /sys/class/ieee80211 2>/dev/null | wc -l)
+    pci_wlan=""
+    for d in /sys/bus/pci/devices/*; do
+        if [ -r "$d/vendor" ] && [ "$(cat "$d/vendor" 2>/dev/null)" = "0x17cb" ]; then
+            pci_wlan="$(basename "$d") $(cat "$d/device")"
+        fi
+    done
+    if [ "$n_phy" -gt 0 ]; then
+        status_line "wlan (ath12k)" "phy present ($pci_wlan)"
+    elif [ -n "$pci_wlan" ]; then
+        status_line "wlan (ath12k)" "PCI $pci_wlan enumerated, no phy"
+    else
+        status_line "wlan (ath12k)" "no PCI function"
+    fi
     if ip link show usb0 >/dev/null 2>&1; then
         status_line "USB-NCM network (usb0)" "UP $(ip -o addr show usb0 2>/dev/null | awk '{print $4}')"
     else
@@ -58,6 +77,8 @@ while :; do
     echo "  2) display test (colour fields + noise on the panel)"
     echo "  3) collect evidence tarball"
     echo "  4) dmesg tail (touch/display/usb)"
+    echo "  5) wifi test   (PCIe + ath12k + firmware + optional scan)"
+    echo "  6) bt test     (uart14 + pwrseq + hci0)"
     echo "  q) quit"
     printf 'choice> '
     read -r choice
@@ -66,6 +87,8 @@ while :; do
         2) piano-display-test --bars --noise --hold 2 ;;
         3) piano-collect ;;
         4) dmesg | grep -iE 'nv|touch|panel|dsi|mdss|drm|usb|dwc|pmic|fg|batt' | tail -40 ;;
+        5) piano-wifi-test ;;
+        6) piano-bt-test ;;
         q|Q) break ;;
         *) echo "unknown choice" ;;
     esac

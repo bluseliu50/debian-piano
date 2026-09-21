@@ -77,6 +77,22 @@ DTB=$KERNEL_DIR/arch/arm64/boot/dts/qcom/sm8750-xiaomi-piano.dtb
 TS_MOD=$KERNEL_DIR/drivers/input/touchscreen/nt36532e/nt36532e_ts.ko
 SPI_MOD=$KERNEL_DIR/drivers/spi/spi-geni-qcom.ko
 UTSRELEASE_H=$KERNEL_DIR/include/generated/utsrelease.h
+WLAN_BT_MODS=(
+    "$KERNEL_DIR/net/wireless/cfg80211.ko"
+    "$KERNEL_DIR/net/mac80211/mac80211.ko"
+    "$KERNEL_DIR/net/qrtr/qrtr.ko"
+    "$KERNEL_DIR/net/qrtr/qrtr-mhi.ko"
+    "$KERNEL_DIR/drivers/bus/mhi/host/mhi.ko"
+    "$KERNEL_DIR/drivers/net/wireless/ath/ath.ko"
+    "$KERNEL_DIR/drivers/net/wireless/ath/ath12k/ath12k.ko"
+    "$KERNEL_DIR/drivers/net/wireless/ath/ath12k/wifi7/ath12k_wifi7.ko"
+    "$KERNEL_DIR/net/bluetooth/bluetooth.ko"
+    "$KERNEL_DIR/net/rfkill/rfkill.ko"
+    "$KERNEL_DIR/drivers/bluetooth/hci_uart.ko"
+    "$KERNEL_DIR/drivers/bluetooth/btqca.ko"
+    "$KERNEL_DIR/drivers/power/sequencing/pwrseq-qcom-wcn.ko"
+)
+WLAN_BT_FW_DIR=$FIRMWARE_DIR/wifi-bt
 
 missing=()
 command -v python3 >/dev/null 2>&1 || missing+=(python3)
@@ -88,6 +104,11 @@ for f in "$MKBOOTIMG" "$UNPACK" "$PARAMS_FILE" "$INITRAMFS_BUILDER" \
 done
 ls "$FIRMWARE_DIR"/odm/firmware/novatek_nt36532_*.bin >/dev/null 2>&1 \
     || missing+=("$FIRMWARE_DIR/odm/firmware/novatek_*.bin (touch firmware blobs)")
+for m in "${WLAN_BT_MODS[@]}"; do
+    [ -s "$m" ] || missing+=("$m (missing or empty)")
+done
+[ -d "$WLAN_BT_FW_DIR/ath12k" ] || missing+=("$WLAN_BT_FW_DIR/ath12k (ath12k firmware tree)")
+[ -d "$WLAN_BT_FW_DIR/qca" ]   || missing+=("$WLAN_BT_FW_DIR/qca (QCA BT firmware)")
 if [ "${#missing[@]}" -gt 0 ]; then
     printf 'build-test-bootimg: missing: %s\n' "${missing[*]}" >&2
     exit 1
@@ -123,20 +144,26 @@ trap 'rm -rf "$WORK"' EXIT
 # --- arm64 userland ---------------------------------------------------------
 TOOLS="$REPO_ROOT/out/arm64-tools"
 DROPBEAR_TREE="$TOOLS/dropbear/tree"
+IW_TREE="$TOOLS/iw/tree"
 if [ -z "$BUSYBOX_DIR" ]; then
-    if [ ! -x "$TOOLS/busybox/busybox" ] || [ ! -x "$DROPBEAR_TREE/usr/sbin/dropbear" ]; then
+    if [ ! -x "$TOOLS/busybox/busybox" ] || [ ! -x "$DROPBEAR_TREE/usr/sbin/dropbear" ] \
+       || [ ! -x "$IW_TREE/usr/sbin/iw" ]; then
         "$FETCH_TOOLS" || die "fetch-arm64-tools failed"
     fi
     BUSYBOX_DIR="$TOOLS/busybox"
 fi
 [ -x "$DROPBEAR_TREE/usr/sbin/dropbear" ] || die "no dropbear tree (run $FETCH_TOOLS)"
+[ -x "$IW_TREE/usr/sbin/iw" ] || die "no iw tree (run $FETCH_TOOLS)"
+
 
 # --- normalize firmware layout ---------------------------------------------
 # The stock-ROM extraction stores touch blobs as
 # <firmware-dir>/odm/firmware/novatek_nt36532_*.bin; the initramfs
-# builder wants DIR/novatek/*.bin.
+# builder wants DIR/novatek/*.bin. WLAN/BT blobs (the ath12k tree and
+# the qca BT firmware under <firmware-dir>/wifi-bt/) are copied verbatim.
 mkdir -p "$WORK/firmware/novatek"
 cp "$FIRMWARE_DIR"/odm/firmware/novatek_nt36532_*.bin "$WORK/firmware/novatek/"
+cp -a "$WLAN_BT_FW_DIR/qca" "$WLAN_BT_FW_DIR/ath12k" "$WORK/firmware/"
 
 # --- initramfs --------------------------------------------------------------
 KEY_OUT=""
@@ -160,10 +187,15 @@ else
 fi
 
 echo "build-test-bootimg: building initramfs (kernel $KVER)"
+WLAN_BT_MOD_ARGS=()
+for m in "${WLAN_BT_MODS[@]}"; do
+    WLAN_BT_MOD_ARGS+=(--module "$m")
+done
 "$INITRAMFS_BUILDER" \
-    --busybox "$BUSYBOX_DIR" --dropbear-tree "$DROPBEAR_TREE" \
+    --busybox "$BUSYBOX_DIR" --dropbear-tree "$DROPBEAR_TREE" --iw-tree "$IW_TREE" \
     --output "$WORK/initramfs.cpio" --compress none \
     --module "$TS_MOD" --module "$SPI_MOD" --kernel-version "$KVER" \
+    "${WLAN_BT_MOD_ARGS[@]}" \
     --firmware-dir "$WORK/firmware" \
     "${ACCESS_ARGS[@]}" "${KEY_ARGS[@]}"
 
@@ -173,11 +205,13 @@ if [ "$GEN_KEY" = 1 ]; then
 fi
 
 "$INITRAMFS_BUILDER" \
-    --busybox "$BUSYBOX_DIR" --dropbear-tree "$DROPBEAR_TREE" \
+    --busybox "$BUSYBOX_DIR" --dropbear-tree "$DROPBEAR_TREE" --iw-tree "$IW_TREE" \
     --output "$WORK/initramfs.cpio.gz" --compress gzip \
     --module "$TS_MOD" --module "$SPI_MOD" --kernel-version "$KVER" \
+    "${WLAN_BT_MOD_ARGS[@]}" \
     --firmware-dir "$WORK/firmware" \
     "${ACCESS_ARGS[@]}" "${KEY_ARGS[@]}"
+
 
 [ "$BOOT_RAMDISK_COMPRESSION" = lz4 ] \
     || die "this script currently assumes CONFIRMED ramdisk_compression=lz4"

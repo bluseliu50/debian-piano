@@ -48,7 +48,7 @@ die() {
 BUSYBOX_DIR=""
 DROPBEAR_DIR=""
 DROPBEAR_TREE=""
-OUTPUT=""
+IW_TREE=""
 AUTHORIZED_KEYS=""
 GENERATE_KEY_OUT=""
 ROOT_PASSWORD=""
@@ -63,6 +63,7 @@ while [ $# -gt 0 ]; do
         --busybox)             BUSYBOX_DIR=${2-}; shift 2 ;;
         --dropbear)            DROPBEAR_DIR=${2-}; shift 2 ;;
         --dropbear-tree)       DROPBEAR_TREE=${2-}; shift 2 ;;
+        --iw-tree)             IW_TREE=${2-}; shift 2 ;;
         --output)              OUTPUT=${2-}; shift 2 ;;
         --authorized-keys)     AUTHORIZED_KEYS=${2-}; shift 2 ;;
         --generate-access-key) GENERATE_KEY_OUT=${2-}; shift 2 ;;
@@ -156,6 +157,13 @@ else
     install -m 0755 "$DROPBEAR_DIR/dropbearkey"  "$STAGING/usr/bin/dropbearkey"
 fi
 
+# --- iw (WLAN nl80211 client) ------------------------------------------------
+if [ -n "$IW_TREE" ]; then
+    [ -x "$IW_TREE/usr/sbin/iw" ] || die "no iw binary at $IW_TREE/usr/sbin/iw"
+    ( cd "$IW_TREE" && tar -cf - usr ) | ( cd "$STAGING" && tar -xf - )
+    echo "build-initramfs: installed iw from $IW_TREE"
+fi
+
 # Minimal command symlinks; /init does `busybox --install -s` at runtime,
 # but the earliest init lines need these before that install runs.
 for cmd in sh mount mkdir ln echo cat ls modprobe; do
@@ -211,7 +219,7 @@ if [ "${#MODULES[@]}" -gt 0 ]; then
         || die "depmod failed for $KERNEL_VERSION"
 fi
 
-# --- touch firmware ---------------------------------------------------------
+# --- firmware (touch + WLAN/BT combo) ----------------------------------------
 if [ -n "$FIRMWARE_DIR" ]; then
     n_fw=0
     if compgen -G "$FIRMWARE_DIR/novatek/*.bin" >/dev/null; then
@@ -222,6 +230,22 @@ if [ -n "$FIRMWARE_DIR" ]; then
         done
     fi
     echo "build-initramfs: installed $n_fw novatek firmware blob(s)"
+
+    # WLAN/BT: qca/hmtbtfw*.tlv + hmtnv* (hci_qca) and the ath12k tree
+    # (amss/m3/bdwlan/board-2) are copied verbatim when present.
+    if [ -d "$FIRMWARE_DIR/qca" ]; then
+        mkdir -p "$STAGING/lib/firmware/qca"
+        for f in "$FIRMWARE_DIR"/qca/*; do
+            [ -f "$f" ] || continue
+            install -m 0644 "$f" "$STAGING/lib/firmware/qca/"
+        done
+        echo "build-initramfs: installed qca BT firmware: $(find "$FIRMWARE_DIR/qca" -type f -printf '%f ')"
+    fi
+    if [ -d "$FIRMWARE_DIR/ath12k" ]; then
+        mkdir -p "$STAGING/lib/firmware/ath12k"
+        cp -a "$FIRMWARE_DIR"/ath12k/. "$STAGING/lib/firmware/ath12k/"
+        echo "build-initramfs: installed ath12k WLAN firmware tree ($(find "$FIRMWARE_DIR/ath12k" -type f | wc -l) files)"
+    fi
 fi
 
 # Sanity: the init script must carry the NCM gadget path. A missing or

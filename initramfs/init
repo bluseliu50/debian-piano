@@ -100,6 +100,21 @@ modprobe spi-geni-qcom 2>/dev/null \
 modprobe nt36532e_ts 2>/dev/null \
     || echo "piano-init: nt36532e_ts not loaded (check modules in initramfs)"
 
+# Bluetooth: uart14's serdev child binds as soon as hci_uart (with its
+# btqca dependency and the pwrseq-qcom-wcn power-sequencing unit) is
+# present; the QCA firmware download then runs on its own.
+modprobe pwrseq-qcom-wcn 2>/dev/null \
+    || echo "piano-init: pwrseq-qcom-wcn not loaded"
+modprobe hci_uart 2>/dev/null \
+    || echo "piano-init: hci_uart not loaded"
+
+# WLAN: ath12k probes the peach PCI function on pcie0; the MHI firmware
+# download takes a few seconds, so keep it off the interactive path.
+( sleep 8
+  modprobe ath12k_wifi7 2>/dev/null || echo "piano-init: ath12k_wifi7 not loaded"
+  modprobe ath12k 2>/dev/null
+) &
+
 # Non-interactive boot smoke report (probe status + evidence tarball), kept
 # in the background so the console stays interactive.
 if command -v piano-tests >/dev/null 2>&1; then

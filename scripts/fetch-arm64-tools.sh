@@ -6,7 +6,8 @@
 # Downloads arm64 Debian packages, extracts them with ar(1) + tar(1) (no
 # dpkg needed) and stages a ready-to-embed userland tree:
 #
-#   DIR/busybox/busybox      static busybox (busybox-static)
+#   DIR/iw/tree/             iw + its shared-library closure (libnl-3,
+#                            libnl-genl-3, libc) — used by the WLAN test
 #   DIR/dropbear/tree/       full dropbear userland tree:
 #                             usr/sbin/dropbear, usr/bin/dropbearkey and
 #                             the shared-library closure under lib/
@@ -48,7 +49,7 @@ MIRROR=http://deb.debian.org/debian
 
 # dropbear-bin runtime closure (trixie arm64 Depends, measured 2026-09-19):
 # libc6 additionally depends on libgcc-s1.
-PKGS=(busybox-static dropbear-bin libc6 libcrypt1 libtomcrypt1 libtommath1 zlib1g libgcc-s1)
+PKGS=(busybox-static dropbear-bin libc6 libcrypt1 libtomcrypt1 libtommath1 zlib1g libgcc-s1 iw libnl-3-200 libnl-genl-3-200)
 
 missing=()
 command -v curl >/dev/null 2>&1 || missing+=(curl)
@@ -130,12 +131,32 @@ ln -sfn usr/lib "$TREE/lib"
 mkdir -p "$OUTDIR/dropbear"
 ln -sf tree/usr/sbin/dropbear    "$OUTDIR/dropbear/dropbear"
 ln -sf tree/usr/bin/dropbearkey  "$OUTDIR/dropbear/dropbearkey"
+
+# --- stage iw tree -----------------------------------------------------------
+# iw (WLAN nl80211 client for the scan test) is dynamically linked against
+# libnl-3/libnl-genl-3 + libc; the same merged-usr staging rules apply.
+IW_TREE="$OUTDIR/iw/tree"
+rm -rf "$IW_TREE"
+mkdir -p "$IW_TREE/usr"
+[ -s "$WORK/x/iw/usr/sbin/iw" ] || die "the iw package does not contain usr/sbin/iw"
+( cd "$WORK/x/iw" && tar -cf - usr/sbin ) | ( cd "$IW_TREE" && tar -xf - )
+for p in libnl-3-200 libnl-genl-3-200 libc6 libgcc-s1; do
+    if [ -d "$WORK/x/$p/usr/lib" ]; then
+        ( cd "$WORK/x/$p" && tar -cf - usr/lib ) | ( cd "$IW_TREE" && tar -xf - )
+    fi
+done
+file "$IW_TREE/usr/sbin/iw" | grep -q 'ARM aarch64' \
+    || die "staged iw is not arm64"
+ln -sfn usr/lib "$IW_TREE/lib"
+[ -e "$IW_TREE/lib/ld-linux-aarch64.so.1" ] || die "no arm64 loader reachable at iw tree /lib"
+mkdir -p "$OUTDIR/iw"
+ln -sf tree/usr/sbin/iw "$OUTDIR/iw/iw"
 {
     echo "suite: $SUITE"
     for p in "${PKGS[@]}"; do
         printf '%s: %s\n' "$p" "$(package_field "$p" Version)"
     done
-    file "$OUTDIR/busybox/busybox" "$TREE/usr/sbin/dropbear"
+    file "$OUTDIR/busybox/busybox" "$TREE/usr/sbin/dropbear" "$IW_TREE/usr/sbin/iw"
 } | tee "$OUTDIR/TOOLS-PROVENANCE"
 
 echo "fetch-arm64-tools: staged in $OUTDIR"
