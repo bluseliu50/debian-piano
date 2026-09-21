@@ -115,6 +115,34 @@ modprobe hci_uart 2>/dev/null \
   modprobe ath12k 2>/dev/null
 ) &
 
+# --- battery / ADSP / audio stack -------------------------------------------
+# Order matters: qrtr + our SERVREG_LOC daemon first (the kernel PDR client
+# retries its lookups, but publishing early avoids a slow first attempt),
+# then the ADSP/CDSP remoteprocs, then pmic-glink + battmgr for battery
+# telemetry. The audioreach sound stack is heavy and deferred: ADSP needs
+# several seconds to boot before the card can register.
+modprobe qrtr 2>/dev/null \
+    || echo "piano-init: qrtr not loaded (pd-locator will idle)"
+if command -v piano-pd-locator >/dev/null 2>&1; then
+    ( piano-pd-locator >/dev/null 2>&1 ) &
+    echo "piano-init: piano-pd-locator started (SERVREG_LOC on qrtr)"
+else
+    echo "piano-init: piano-pd-locator missing (battery/audio services will not come up)"
+fi
+
+modprobe qcom_q6v5_pas 2>/dev/null \
+    || echo "piano-init: qcom_q6v5_pas not loaded (ADSP/CDSP stay down)"
+modprobe pmic_glink 2>/dev/null \
+    || echo "piano-init: pmic_glink not loaded"
+modprobe qcom_battmgr 2>/dev/null \
+    || echo "piano-init: qcom_battmgr not loaded (no battery telemetry)"
+
+( sleep 12
+  modprobe snd-soc-sc8280xp 2>/dev/null \
+      || echo "piano-init: sound card driver not loaded"
+  modprobe fastrpc 2>/dev/null
+) &
+
 # Non-interactive boot smoke report (probe status + evidence tarball), kept
 # in the background so the console stays interactive.
 if command -v piano-tests >/dev/null 2>&1; then

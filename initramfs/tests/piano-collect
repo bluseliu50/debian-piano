@@ -1,60 +1,77 @@
 #!/bin/sh
-# piano-collect — gather first-light evidence into one tarball.
+# piano-collect — one-shot evidence collection into a single tarball.
 #
-# Usage: piano-collect [--output FILE]
+# Collects once, prints a compact summary once, exits. Nothing streams.
+# Copy the tarball off the device with:
+#   scp -i piano-test-ssh-ed25519 root@10.42.0.2:/run/piano-evidence-*.tar.gz .
 #
-# Collects dmesg, /proc and touch/display state into a gzip tarball
-# (default /run/piano-evidence-<timestamp>.tar.gz) and prints the
-# scp command to fetch it from the host over the USB-NCM link.
+# Usage: piano-collect [--verbose]
+#   --verbose  adds the deep dumps used for remote development:
+#              full dmesg, gpio/regulator/clock tables, remoteproc
+#              traces, power-supply fields, ALSA topology, interrupts.
 
-OUT=""
-while [ $# -gt 0 ]; do
-    case "$1" in
-        --output) OUT=${2-}; shift 2 ;;
-        -h|--help) sed -n '2,7p' "$0"; exit 0 ;;
-        *) echo "piano-collect: unknown option: $1" >&2; exit 2 ;;
-    esac
-done
+VERBOSE=0
+[ "${1-}" = "--verbose" ] || [ "${1-}" = "-v" ] && VERBOSE=1
 
-STAGE=$(mktemp -d /tmp/piano-collect.XXXXXX)
-trap 'rm -rf "$STAGE"' EXIT
+ts=$(date +%Y%m%d-%H%M%S)
+out=/run/piano-evidence-$ts.tar.gz
+dir=/run/ev-$ts
+mkdir -p "$dir"
 
-mkdir -p "$STAGE/proc" "$STAGE/sys"
-
-dmesg > "$STAGE/dmesg.txt" 2>/dev/null || dmesg > "$STAGE/dmesg.txt"
-
-for f in cmdline version cpuinfo interrupts iomem ioports meminfo mounts \
-         modules slabinfo devices bus/usb/devices; do
-    cp "/proc/$f" "$STAGE/proc/$(echo "$f" | tr / _)" 2>/dev/null || true
-done
-
-for f in /sys/class/drm/*/status /sys/class/drm/*/enabled \
-         /sys/class/graphics/fb0/virtual_size /sys/class/graphics/fb0/bits_per_pixel \
-         /sys/class/backlight/*/brightness /sys/class/backlight/*/max_brightness \
-         /proc/nvt_thp_status; do
-    [ -e "$f" ] || continue
-    dest="$STAGE/sys/$(echo "$f" | sed 's#^/sys/class/##; s#^/proc/##; s#/#_#g')"
-    cp "$f" "$dest" 2>/dev/null || true
-done
-
-lspci > "$STAGE/lspci.txt" 2>/dev/null || true
-lsmod > "$STAGE/lsmod.txt" 2>/dev/null || cat /proc/modules > "$STAGE/lsmod.txt"
-uname -a > "$STAGE/uname.txt"
-cat /proc/cmdline > "$STAGE/cmdline.txt" 2>/dev/null || true
-
-NET=$(ip -o addr show usb0 2>/dev/null | awk '{print $4}')
-[ -n "$NET" ] || NET=10.42.0.2/24
-
-TS=$(date +%Y%m%d-%H%M%S)
-OUT=${OUT:-/run/piano-evidence-$TS.tar.gz}
-mkdir -p "$(dirname "$OUT")" 2>/dev/null || OUT="/tmp/piano-evidence-$TS.tar.gz"
-
-tar -czf "$OUT" -C "$STAGE" . 2>/dev/null || {
-    echo "piano-collect: tar failed" >&2
-    exit 1
+grab() { # grab NAME command...
+    name=$1; shift
+    "$@" > "$dir/$name" 2>&1
 }
 
-echo "piano-collect: wrote $OUT ($(wc -c < "$OUT") bytes)"
-sha256sum "$OUT"
-echo "fetch from the host with:"
-echo "  scp root@10.42.0.2:$OUT ."
+# --- core (always) -------------------------------------------------------------
+grab uname        uname -a
+grab cmdline      cat /proc/cmdline
+grab meminfo      head -20 /proc/meminfo
+grab modules      lsmod
+grab interrupt    cat /proc/interrupts
+grab devices      cat /proc/devices
+grab iomem        cat /proc/iomem
+grab mounts       cat /proc/mounts
+grab dmesg-tail   dmesg
+grab dt-model     cat /proc/device-tree/model 2>/dev/null
+
+# subsystem presence snapshots (small, high signal)
+grab psys-remoteproc  sh -c 'for r in /sys/class/remoteproc/remoteproc*; do echo "== $r"; cat "$r/name" "$r/state" 2>/dev/null; done'
+grab psys-power       sh -c 'for p in /sys/class/power_supply/*; do echo "== $p"; cd "$p" 2>/dev/null && for f in type status capacity voltage_now current_now temp health online present technology charge_full charge_full_design cycle_count; do printf "%s=" "$f"; cat "$f" 2>/dev/null; done; done'
+grab psys-bt          sh -c 'ls -l /sys/class/bluetooth 2>/dev/null; cat /sys/class/bluetooth/hci0/address 2>/dev/null'
+grab psys-wifi        sh -c 'ls /sys/class/ieee80211 2>/dev/null; ls /sys/class/net 2>/dev/null'
+grab psys-sound       sh -c 'cat /proc/asound/cards 2>/dev/null; ls /sys/class/sound 2>/dev/null'
+grab psys-soundwire   sh -c 'ls -l /sys/bus/soundwire/devices 2>/dev/null'
+grab psys-backlight   sh -c 'ls /sys/class/backlight 2>/dev/null; for b in /sys/class/backlight/*; do cat "$b/brightness" "$b/max_brightness" 2>/dev/null; done'
+grab psys-touch       sh -c 'cat /proc/nvt_thp_info 2>/dev/null; ls /proc/nvt* 2>/dev/null'
+
+# --- verbose additions (development depth) ---------------------------------------
+if [ "$VERBOSE" = 1 ]; then
+    grab dmesg-full   dmesg
+    grab gpio         cat /sys/kernel/debug/gpio
+    grab pinctrl      cat /sys/kernel/debug/pinctrl/pinctrl-devices
+    grab regulators   sh -c 'grep -r . /sys/class/regulator/*/name /sys/class/regulator/*/state /sys/class/regulator/*/microvolts /sys/class/regulator/*/num_users 2>/dev/null'
+    grab clk-summary  cat /sys/kernel/debug/clk/clk_summary
+    grab remoteproc   sh -c 'for r in /sys/class/remoteproc/remoteproc*; do echo "== $r"; ls "$r"; cat "$r"/recovery "$r"/firmware 2>/dev/null; done'
+    grab rpmsg        ls -l /sys/bus/rpmsg/devices
+    grab qrtr         ls -l /sys/kernel/qrtr 2>/dev/null
+    grab asoc         sh -c 'find /sys/kernel/debug/asoc -maxdepth 3 2>/dev/null'
+    grab dapm         sh -c 'grep -r . /sys/kernel/debug/asoc/*/dapm/* 2>/dev/null | head -200'
+    grab gpu          sh -c 'ls /sys/class/devfreq 2>/dev/null; ls /sys/class/mali 2>/dev/null'
+    grab usb          sh -c 'ls -l /sys/class/udc; cat /sys/kernel/debug/usb/devices 2>/dev/null'
+    grab thermal      sh -c 'for t in /sys/class/thermal/thermal_zone*; do printf "%s " "$t"; cat "$t/type" "$t/temp" 2>/dev/null | tr "\n" " "; echo; done'
+    grab slabtop      sh -c 'cat /proc/slabinfo | head -30'
+    grab vmstat       cat /proc/vmstat
+    grab timerlist    cat /proc/timer_list
+    grab firmware-dl  sh -c 'grep -iE "firmware|request_firmware" /proc/kmsg 2>/dev/null | tail -50'
+fi
+
+tar -czf "$out" -C /run "ev-$ts" 2>/dev/null
+rm -rf "$dir"
+
+size=$(stat -c%s "$out" 2>/dev/null || echo 0)
+n_files=$(tar -tzf "$out" 2>/dev/null | grep -vc '/$')
+printf 'piano-collect: %s\n' "$out"
+printf '  %s bytes, %s evidence files%s\n' "$size" "$n_files" \
+    "$([ "$VERBOSE" = 1 ] && printf ' (verbose: gpio/regulators/clk/asoc/thermal)')"
+printf '  host copy: scp -i piano-test-ssh-ed25519 root@10.42.0.2:%s .\n' "$out"
