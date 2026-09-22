@@ -408,9 +408,13 @@ python3 "$MKBOOTIMG" \
     --vendor_cmdline "$CMDLINE" \
     "${GEOM[@]}" --dtb_offset "$VB_DTB_OFFSET"
 
-# C: v4 boot image that itself carries the initramfs (lz4, stock-style),
+# C: v4 boot image that itself carries the initramfs (GZIP).
+# On-device evidence (2026-09-22): ABL's RAM-boot path delivers a gzip
+# ramdisk to the kernel (the validated overnight images rdinit3/4 carried
+# gzip), while the lz4-legacy payload was silently dropped — the kernel
+# booted with no initramfs and panicked on rdinit=-ENOENT / no root=.
 python3 "$MKBOOTIMG" \
-    --kernel "$IMAGE" --ramdisk "$WORK/initramfs.cpio.lz4" \
+    --kernel "$IMAGE" --ramdisk "$WORK/initramfs.cpio.gz" \
     --header_version "$HEADER_VERSION" --pagesize "$PAGESIZE" \
     "${GEOM[@]}" -o "$OUTPUT_DIR/piano-test-boot-ramdisk.img"
 
