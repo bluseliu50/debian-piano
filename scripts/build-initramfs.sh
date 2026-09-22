@@ -152,6 +152,12 @@ mkdir -p \
     "$STAGING/sys/kernel/config"
 
 install -m 0755 "$INIT_SRC" "$STAGING/init"
+# The same script ships as /beaconinit: ABL's v4 RAM boot concatenates the
+# stock vendor ramdisk AFTER ours, so Android's first_stage init wins the
+# /init cascade slot — the kernel's forced cmdline selects rdinit=/beaconinit
+# instead (runbook §7.3; without this twin the RAM boot panics on
+# "Failed to execute /beaconinit").
+install -m 0755 "$INIT_SRC" "$STAGING/beaconinit"
 install -m 0755 "$BUSYBOX_DIR/busybox" "$STAGING/bin/busybox"
 if [ -n "$DROPBEAR_TREE" ]; then
     cp -a "$DROPBEAR_TREE/usr" "$STAGING/"
