@@ -192,6 +192,7 @@ missing=()
 command -v python3 >/dev/null 2>&1 || missing+=(python3)
 command -v lz4     >/dev/null 2>&1 || missing+=(lz4)
 command -v gzip    >/dev/null 2>&1 || missing+=(gzip)
+command -v dtc     >/dev/null 2>&1 || missing+=(dtc)
 for f in "$MKBOOTIMG" "$UNPACK" "$PARAMS_FILE" "$INITRAMFS_BUILDER" \
          "$IMAGE" "$DTB" "$SPI_MOD" "$UTSRELEASE_H"; do
     [ -s "$f" ] || missing+=("$f (missing or empty)")
@@ -481,6 +482,20 @@ verify_boot "$OUTPUT_DIR/piano-test-boot-ramdisk.img"
 verify_vendor_boot "$OUTPUT_DIR/piano-test-vendor_boot-dtb.img"
 verify_boot "$OUTPUT_DIR/piano-test-boot-v2.img"
 
+
+# --- dtbo (part of the verified boot flow: it is flashed to dtbo_b) ---------
+# The working combination (device runbook §7.1, measured 2026-09-22) composes
+# our RAM-booted v4 image with the CURRENT SLOT's stock vendor_boot and the
+# dtbo partition — the overlay carries every mainline-side override (provider
+# fragments, dwc3 USB with the usb_nop_phy stand-in, simpledrm console).
+# Build it from the tracked source so the canonical output is self-contained.
+DTBO_SRC="$REPO_ROOT/boot/dtbo-piano-usb-nopd9.dts"
+DTBO_OUT="$OUTPUT_DIR/dtbo-usb-nopd9.img"
+[ -s "$DTBO_SRC" ] || die "missing DTBO source: $DTBO_SRC"
+python3 "$REPO_ROOT/scripts/build-dtbo.py" --dts "$DTBO_SRC" --output "$DTBO_OUT" \
+    || die "build-dtbo failed for $DTBO_SRC"
+[ -s "$DTBO_OUT" ] || die "dtbo image is empty: $DTBO_OUT"
+echo "build-test-bootimg: built $DTBO_OUT (sha256 $(sha256sum "$DTBO_OUT" | cut -d' ' -f1))"
 # --- manifest ---------------------------------------------------------------
 {
     echo "piano RAM-boot test image set"
@@ -489,31 +504,31 @@ verify_boot "$OUTPUT_DIR/piano-test-boot-v2.img"
     echo "boot params: header v$HEADER_VERSION, pagesize $PAGESIZE," \
          "base $VB_BASE koff $VB_KERNEL_OFFSET roff $VB_RAMDISK_OFFSET" \
          "tags $VB_TAGS_OFFSET dtb $VB_DTB_OFFSET (stock-confirmed)"
+    echo "dtbo: dtbo-usb-nopd9.img (from boot/dtbo-piano-usb-nopd9.dts)"
     echo
-    sha256sum "$OUTPUT_DIR"/piano-test-*.img
+    sha256sum "$DTBO_OUT" "$OUTPUT_DIR"/piano-test-*.img
     [ -f "$KEY_OUT" ] && { echo; echo "SSH access key: $KEY_OUT"; }
     [ "$ROOT_PASSWORD_SET" = 1 ] \
         && echo "SSH root password auth: enabled$([ -n "$ROOT_PASSWORD" ] || echo ' (BLANK — press enter)')"
     echo
-    echo "Boot order (all RAM-boot, NOTHING is flashed):"
-    echo "  1) fastboot getvar current-slot        # record slot"
-    echo "  2) fastboot boot piano-test-boot-v2.img"
-    echo "     PRIMARY path — single image. The host fastboot (Debian android-tools"
-    echo "     37.0.0) accepts exactly ONE image per 'boot' (AOSP FB_CMD_BOOT:"
-    echo "     'boot KERNEL [RAMDISK [SECOND]]'); a second argument that is itself a"
-    echo "     boot.img dies with 'cannot boot a boot.img *and* ramdisk'."
-    echo "  3) optional abl-acceptance probe: fastboot boot piano-test-boot.img"
-    echo "     (v4 boot with EMPTY ramdisk and no dtb — only tells whether abl"
-    echo "     accepts a RAM boot at all; the kernel starting and then stopping"
-    echo "     is EXPECTED, there is no initramfs/dtb in this image)"
-    echo "  4) the v4 dual-image combos (boot+vendor_boot /"
-    echo "     boot-ramdisk+vendor_boot-dtb) have NO RAM path on this host:"
-    echo "     they need a fastboot that accepts multiple images per 'boot'"
-    echo "     (watch its usage text); not available with android-tools 37.0.0."
+    echo "Boot flow (verified shape, device runbook §7.1):"
+    echo "  fastboot getvar current-slot                 # RAM boot composes SLOT-B images"
+    echo "  fastboot set_active b                        # current slot must be b"
+    echo "  fastboot flash dtbo_b dtbo-usb-nopd9.img     # whitelist partition (dtbo only)"
+    echo "  fastboot boot piano-test-boot-ramdisk.img    # v4 kernel+initramfs; ABL composes"
+    echo "      it with slot-b stock vendor_boot + dtbo_b (single-image fastboot boot;"
+    echo "      android-tools 37.0.0 accepts exactly ONE image)"
     echo
     echo "After boot: USB-NCM host 10.42.0.1/24, device 10.42.0.2;"
     echo "  ssh -i $([ -n "$KEY_OUT" ] && echo "$KEY_OUT" || echo '<your-key>') root@10.42.0.2"
     echo "  then run: piano-tests"
+    echo
+    echo "Other images (fallbacks, not part of the verified flow):"
+    echo "  piano-test-boot-v2.img  — v2 all-in-one, UNVERIFIED on-device (the v0"
+    echo "      family was measured as silently rejected); boot only as an experiment"
+    echo "  piano-test-boot.img     — v4 with EMPTY ramdisk: abl-acceptance probe only"
+    echo "  piano-test-vendor_boot*.img — dual-image combos, no RAM path with"
+    echo "      android-tools 37.0.0 (single-image 'boot' only)"
 } | tee "$OUTPUT_DIR/MANIFEST.txt"
 
 echo
