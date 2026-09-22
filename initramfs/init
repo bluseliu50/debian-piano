@@ -3,15 +3,22 @@
 #
 # Boot contract: ABL v4 RAM boot concatenates the stock vendor_ramdisk after
 # ours, so the entry point must NOT be /init; the kernel cmdline forces
-# rdinit=/beaconinit (see build-initramfs.sh).
+# rdinit=/beaconinit (see build-initramfs.sh, which installs this file as
+# both /init and /beaconinit).
 #
 # Phase order is deliberate:
 #   1. beacon (bounded): proves userspace is alive on the framebuffer
 #   2. UDC wait: dwc3 comes up via a long deferred-probe chain
 #      (rpmhcc -> gcc -> icc -> rpmhpd -> phy -> dwc3), give it 120 s
-#   3. NCM gadget + udhcpd + dropbear
+#   3. NCM gadget + udhcpd + dropbear (static) — ssh is the primary access
+#      path; busybox telnetd runs as an additional fallback
 #   4. diagnostics dump printed AFTER the beacon stopped, so fbcon text
 #      stays visible on screen (the beacon scrubs the framebuffer)
+#   5. subsystem module loading (touch / WLAN / BT / remoteproc / battery /
+#      audio). The initramfs has no udev: NOTHING autoloads — every module
+#      the test matrix probes must be modprobed here (2026-09-22 lesson:
+#      an image with the loading disabled fails every subsystem except
+#      display and usb-net)
 
 export PATH=/bin:/sbin:/usr/bin:/usr/sbin
 
@@ -27,6 +34,11 @@ mount -t devpts devpts /dev/pts
 mount -t proc proc /proc
 mount -t sysfs sysfs /sys
 mount -t configfs configfs /sys/kernel/config
+# debugfs feeds piano-collect --verbose (gpio/pinctrl/clk/asoc tables);
+# CONFIG_DEBUG_FS=y is already in piano_defconfig.
+mkdir -p /sys/kernel/debug
+mount -t debugfs debugfs /sys/kernel/debug 2>/dev/null \
+    || say "WARN debugfs mount failed (verbose collect will lack debug tables)"
 
 # --- framebuffer beacon (bounded) -------------------------------------------
 # Alternate white/black fills of the whole splash framebuffer so userspace
@@ -149,42 +161,88 @@ mkdir -p /var/lib/misc && touch /var/lib/misc/udhcpd.leases
 udhcpd /tmp/udhcpd.conf >/run/udhcpd.log 2>&1 &
 say "udhcpd launched (host: static 10.42.0.1/24)"
 
-# --- dropbear ---------------------------------------------------------------
+# --- ssh (static dropbear) + telnet fallback ---------------------------------
 mkdir -p /etc/dropbear /root/.ssh
-# dropbear in the current initramfs is dynamically linked (no libc present),
-# so it cannot exec at all. Detect and fall back to busybox telnetd (static).
+# The image ships a STATIC dropbear (musl), which runs in the bare initramfs.
+# Keep a runtime probe anyway: if the binary ever goes dynamic again it
+# silently fails to exec — detect that and still bring up telnetd.
 if timeout 15 dropbearkey -t ed25519 -f /etc/dropbear/dropbear_ed25519_host_key >/run/dbk.log 2>&1; then
-  dropbear -E -B -p 22 >/run/dropbear.log 2>&1 && say "dropbear up on :22"
+  dropbear -E -B -p 22 >/run/dropbear.log 2>&1 && say "dropbear (ssh) up on :22"
 else
-  say "dropbear unusable ($(head -c 80 /run/dbk.log 2>/dev/null)); telnetd fallback"
+  say "dropbear unusable ($(head -c 80 /run/dbk.log 2>/dev/null)); ssh DOWN, telnet only"
 fi
 busybox telnetd -p 23 -l /bin/sh && say "telnetd up on :23" || say "WARN telnetd failed"
 
-say "debug environment up: NCM 10.42.0.2, ssh root@10.42.0.2"
+say "debug environment up: NCM 10.42.0.2, ssh/telnet root@10.42.0.2"
 
-# Load the touch stack (SPI controller first; the touch driver defers until
-# the DSI panel is prepared — a defer message here is expected on first boots)
-#modprobe spi-geni-qcom 2>/dev/null
-#modprobe nt36532e_ts 2>/dev/null
+# --- subsystem module loading -------------------------------------------------
+# No udev in the initramfs: without these modprobe calls the packed modules
+# sit unused in /lib/modules and every subsystem except display (built-in)
+# and usb-net shows FAIL. Failures are logged, never fatal.
+load() { # load MODULE... — modprobe with console + log trail
+    for m in "$@"; do
+        if modprobe "$m" 2>>/run/modprobe.log; then
+            say "modprobe $m ok"
+        else
+            say "modprobe $m FAILED (see /run/modprobe.log)"
+        fi
+    done
+}
 
-# WLAN/BT/remoteproc/battery stack (best effort, non-fatal)
-#modprobe pwrseq-qcom-wcn 2>/dev/null
-#modprobe hci_uart 2>/dev/null
-#modprobe phy-qcom-qmp-pcie 2>/dev/null
-( sleep 8; modprobe ath12k 2>/dev/null ) &
-#modprobe qrtr 2>/dev/null
+# battery/ADSP/audio: qrtr + our SERVREG_LOC daemon first (the kernel PDR
+# client retries its lookups, but publishing early avoids a slow first
+# attempt), then the remoteprocs, then pmic-glink + battmgr telemetry.
+load qrtr
 if command -v piano-pd-locator >/dev/null 2>&1; then
-  ( piano-pd-locator >/dev/null 2>&1 ) &
+    ( piano-pd-locator >/dev/null 2>&1 ) &
+    say "piano-pd-locator started (SERVREG_LOC on qrtr)"
+else
+    say "piano-pd-locator missing (battery/audio services will not come up)"
 fi
-#modprobe qcom_q6v5_pas 2>/dev/null
-#modprobe pmic_glink 2>/dev/null
-#modprobe pmic_glink_altmode 2>/dev/null
-#modprobe qcom_battmgr 2>/dev/null
-( sleep 12; modprobe snd-soc-sc8280xp 2>/dev/null; modprobe fastrpc 2>/dev/null ) &
+load qcom_q6v5_pas
+load pmic_glink
+load qcom_battmgr
 
-# Non-interactive boot smoke report in the background
+# pmic_glink_altmode is an aux-bus client — without udev nothing autoloads
+# it. It is loaded AFTER the gadget is bound so a Type-C role event can
+# never race the debug link up; the gadget already works without it.
+load pmic_glink_altmode
+
+# touch: SPI controller first; the touch driver defers until the DSI panel
+# is prepared — display is built-in and already up by now, so a defer
+# message here means a real panel-side problem, not ordering.
+load spi-geni-qcom
+load nt36532e_ts
+
+# bluetooth: uart14's serdev child binds once hci_uart (with btqca and the
+# pwrseq power-sequencing unit) is present; the QCA firmware download then
+# runs on its own.
+load pwrseq-qcom-wcn
+load hci_uart
+
+# wlan: pcie0 needs its QMP phy before ath12k can see the peach function;
+# the MHI firmware download takes seconds — keep it off the interactive path.
+load phy-qcom-qmp-pcie
+( sleep 8
+  modprobe ath12k_wifi7 2>>/run/modprobe.log || modprobe ath12k 2>>/run/modprobe.log \
+      || say "modprobe ath12k FAILED (see /run/modprobe.log)"
+) &
+
+# audio: the audioreach stack needs the ADSP booted for several seconds
+# before the sound card can register — deferred like ath12k.
+( sleep 12
+  if modprobe snd-soc-sc8280xp 2>>/run/modprobe.log; then
+      say "modprobe snd-soc-sc8280xp ok"
+  else
+      say "modprobe snd-soc-sc8280xp FAILED (see /run/modprobe.log)"
+  fi
+  modprobe fastrpc 2>>/run/modprobe.log
+) &
+
+# Non-interactive boot smoke report in the background (after the module
+# waves above had time to settle; probe results are polled live anyway).
 if command -v piano-tests >/dev/null 2>&1; then
-  ( sleep 5; piano-tests --auto > /run/boot-smoke.log 2>&1 ) &
+  ( sleep 20; piano-tests --auto > /run/boot-smoke.log 2>&1 ) &
 fi
 
 exec setsid cttyhack /bin/sh

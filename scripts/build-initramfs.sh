@@ -151,7 +151,11 @@ mkdir -p \
     "$STAGING/var/lib/misc" \
     "$STAGING/sys/kernel/config"
 
+# The boot cmdline forces rdinit=/beaconinit (ABL concatenates the stock
+# vendor_ramdisk after ours — an /init entry point could be overwritten by
+# it); install both names so every boot path finds our entry point.
 install -m 0755 "$INIT_SRC" "$STAGING/init"
+install -m 0755 "$INIT_SRC" "$STAGING/beaconinit"
 install -m 0755 "$BUSYBOX_DIR/busybox" "$STAGING/bin/busybox"
 if [ -n "$DROPBEAR_TREE" ]; then
     cp -a "$DROPBEAR_TREE/usr" "$STAGING/"
