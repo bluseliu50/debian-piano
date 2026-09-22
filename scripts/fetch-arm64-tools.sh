@@ -1,33 +1,34 @@
 #!/usr/bin/env bash
-# fetch-arm64-tools.sh — fetch static arm64 busybox + dropbear from Debian.
+# fetch-arm64-tools.sh — stage the arm64 userland pieces of the test image.
 #
 # Usage: scripts/fetch-arm64-tools.sh [--suite SUITE] [--output-dir DIR]
 #
-# Downloads arm64 Debian packages, extracts them with ar(1) + tar(1) (no
-# dpkg needed) and stages a ready-to-embed userland tree:
+# Downloads Debian/Alpine packages and dropbear sources, and stages:
 #
+#   DIR/busybox/             static busybox from Debian busybox-static
 #   DIR/musl-sysroot/        Alpine musl-dev (aarch64) sysroot used to
-#                            cross-compile the static piano-pd-locator
-#                            (crt1.o + libc.a only; toolchain material,
-#                            never shipped into any repository)
+#                            cross-compile the static piano-pd-locator and
+#                            dropbear (crt1.o + libc.a only; toolchain
+#                            material, never shipped into any repository)
+#   DIR/dropbear-static/     STATIC dropbear + dropbearkey, cross-built from
+#                            pinned source against the musl sysroot — the
+#                            pair the initramfs actually ships (the Debian
+#                            dropbear-bin is dynamically linked and its
+#                            glibc closure failed to exec on-device)
+#   DIR/bin/musl-aarch64-cc  CC wrapper used for that build (reusable for
+#                            further static musl cross-builds)
 #   DIR/iw/tree/             iw + its shared-library closure (libnl-3,
 #                            libnl-genl-3, libc) — used by the WLAN test
-#   DIR/dropbear/tree/       full dropbear userland tree:
-#                             usr/sbin/dropbear, usr/bin/dropbearkey and
-#                             the shared-library closure under lib/
-#                             (Debian has no static dropbear; the runtime
-#                             closure — libc6, libcrypt1, libtomcrypt1,
-#                             libtommath1, zlib1g, libgcc-s1 — is staged
-#                             so the binaries run inside a bare initramfs)
-#   DIR/dropbear/dropbear    + dropbearkey convenience symlinks
-#   DIR/TOOLS-PROVENANCE     versions + sha256 record
+#   DIR/aplay/tree/          aplay + libasound closure — audio test tone
+#   DIR/dropbear/tree/       Debian dropbear-bin + glibc closure (legacy
+#                            fallback, no longer packed into images)
 #
 # Default DIR: out/arm64-tools (gitignored).
 
 set -euo pipefail
 
 usage() {
-    sed -n '2,19p' "$0"; exit 2
+    sed -n '2,26p' "$0"; exit 2
 }
 
 die() {
@@ -48,8 +49,12 @@ while [ $# -gt 0 ]; do
 done
 
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
+# Mirror overrides for constrained networks, e.g.
+#   PIANO_DEBIAN_MIRROR=https://mirrors.tuna.tsinghua.edu.cn/debian
+#   PIANO_ALPINE_MIRROR=https://mirrors.tuna.tsinghua.edu.cn/alpine
+MIRROR=${PIANO_DEBIAN_MIRROR:-http://deb.debian.org/debian}
+ALPINE=${PIANO_ALPINE_MIRROR:-https://dl-cdn.alpinelinux.org/alpine}
 OUTDIR=${OUTDIR:-$REPO_ROOT/out/arm64-tools}
-MIRROR=http://deb.debian.org/debian
 
 # dropbear-bin runtime closure (trixie arm64 Depends, measured 2026-09-19):
 # libc6 additionally depends on libgcc-s1.
@@ -68,9 +73,14 @@ fi
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/piano-tools.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
 
-echo "fetch-arm64-tools: resolving packages for $SUITE/arm64..."
-curl -fsSL "$MIRROR/dists/$SUITE/main/binary-arm64/Packages.gz" -o "$WORK/Packages.gz" \
-    || die "cannot download Packages.gz for $SUITE"
+# Debian-package staging is skipped when all previously staged trees are
+# still in place (set PIANO_FORCE_FETCH=1 to re-download).
+DEBIAN_NEEDED=0
+[ "${PIANO_FORCE_FETCH:-0}" = 1 ] && DEBIAN_NEEDED=1
+for f in "$OUTDIR/busybox/busybox" "$OUTDIR/dropbear/tree/usr/sbin/dropbear" \
+         "$OUTDIR/iw/tree/usr/sbin/iw" "$OUTDIR/aplay/tree/usr/bin/aplay"; do
+    [ -x "$f" ] || DEBIAN_NEEDED=1
+done
 
 package_field() { # package_field PKGNAME FIELD
     # NOTE: awk must not exit early — an early exit SIGPIPEs zcat under
@@ -83,6 +93,11 @@ package_field() { # package_field PKGNAME FIELD
             }
         '
 }
+if [ "$DEBIAN_NEEDED" = 1 ]; then
+echo "fetch-arm64-tools: resolving packages for $SUITE/arm64..."
+curl -fsSL --retry 3 --retry-delay 2 "$MIRROR/dists/$SUITE/main/binary-arm64/Packages.gz" -o "$WORK/Packages.gz" \
+    || die "cannot download Packages.gz for $SUITE"
+
 
 fetch_and_extract() { # fetch_and_extract PKGNAME — extracts data.tar into WORK/x/PKGNAME
     local pkg=$1 ver fn
@@ -91,7 +106,7 @@ fetch_and_extract() { # fetch_and_extract PKGNAME — extracts data.tar into WOR
     fn=$(package_field "$pkg" Filename)
     [ -n "$fn" ] || die "package $pkg has no Filename"
     echo "fetch-arm64-tools: $pkg $ver" >&2
-    curl -fsSL "$MIRROR/$fn" -o "$WORK/$pkg.deb" || die "download failed: $pkg"
+    curl -fsSL --retry 3 --retry-delay 2 "$MIRROR/$fn" -o "$WORK/$pkg.deb" || die "download failed: $pkg"
     sha256sum "$WORK/$pkg.deb" >&2
     mkdir -p "$WORK/x/$pkg"
     ( cd "$WORK/x/$pkg" && ar x "$WORK/$pkg.deb" ) || die "ar extract failed: $pkg"
@@ -154,23 +169,6 @@ ln -sfn usr/lib "$APLAY_TREE/lib"
 [ -e "$APLAY_TREE/lib/ld-linux-aarch64.so.1" ] || die "no arm64 loader reachable at aplay tree /lib"
 mkdir -p "$OUTDIR/aplay"
 ln -sf tree/usr/bin/aplay "$OUTDIR/aplay/aplay"
-
-# --- stage musl sysroot (for the static pd-locator cross-build) ---------------
-# Pinned Alpine musl-dev; downloaded from the official Alpine CDN, extracted
-# under the gitignored tools dir. This is compiler material, not shipped code.
-MUSL_VER=1.2.6-r3
-SYSROOT="$OUTDIR/musl-sysroot"
-if [ ! -f "$SYSROOT/usr/lib/libc.a" ] || [ ! -f "$SYSROOT/usr/lib/crt1.o" ]; then
-    echo "fetch-arm64-tools: fetching musl-dev $MUSL_VER (aarch64) for the sysroot..."
-    curl -fsSL "https://dl-cdn.alpinelinux.org/alpine/edge/main/aarch64/musl-dev-$MUSL_VER.apk" \
-        -o "$WORK/musl-dev.apk" || die "cannot download musl-dev"
-    rm -rf "$SYSROOT"
-    mkdir -p "$SYSROOT"
-    tar -xzf "$WORK/musl-dev.apk" -C "$SYSROOT" || die "cannot extract musl-dev (not gzip?)"
-    [ -f "$SYSROOT/usr/lib/libc.a" ] || die "musl-dev apk lacks usr/lib/libc.a"
-    [ -f "$SYSROOT/usr/lib/crt1.o" ] || die "musl-dev apk lacks usr/lib/crt1.o"
-fi
-
 # --- stage iw tree -----------------------------------------------------------
 # iw (WLAN nl80211 client for the scan test) is dynamically linked against
 # libnl-3/libnl-genl-3 + libc; the same merged-usr staging rules apply.
@@ -190,12 +188,144 @@ ln -sfn usr/lib "$IW_TREE/lib"
 [ -e "$IW_TREE/lib/ld-linux-aarch64.so.1" ] || die "no arm64 loader reachable at iw tree /lib"
 mkdir -p "$OUTDIR/iw"
 ln -sf tree/usr/sbin/iw "$OUTDIR/iw/iw"
+else
+    echo "fetch-arm64-tools: staged Debian trees present — skipping re-download"
+fi
+
+# --- stage musl sysroot (for the static pd-locator cross-build) ---------------
+# Pinned Alpine musl-dev; downloaded from the official Alpine CDN, extracted
+# under the gitignored tools dir. This is compiler material, not shipped code.
+MUSL_VER=1.2.6-r3
+SYSROOT="$OUTDIR/musl-sysroot"
+if [ ! -f "$SYSROOT/usr/lib/libc.a" ] || [ ! -f "$SYSROOT/usr/lib/crt1.o" ]; then
+    echo "fetch-arm64-tools: fetching musl-dev $MUSL_VER (aarch64) for the sysroot..."
+    curl -fsSL --retry 3 --retry-delay 2 "$ALPINE/edge/main/aarch64/musl-dev-$MUSL_VER.apk" \
+        -o "$WORK/musl-dev.apk" || die "cannot download musl-dev"
+    rm -rf "$SYSROOT"
+    mkdir -p "$SYSROOT"
+    tar -xzf "$WORK/musl-dev.apk" -C "$SYSROOT" || die "cannot extract musl-dev (not gzip?)"
+    [ -f "$SYSROOT/usr/lib/libc.a" ] || die "musl-dev apk lacks usr/lib/libc.a"
+    [ -f "$SYSROOT/usr/lib/crt1.o" ] || die "musl-dev apk lacks usr/lib/crt1.o"
+fi
+
+# --- build static dropbear (dropbear + dropbearkey) ---------------------------
+# The Debian dropbear-bin above is dynamically linked; its glibc closure died
+# on-device (2026-09-22: no exec in the bare initramfs). Build a fully static
+# dropbear from source against the Alpine musl sysroot instead — same approach
+# as piano-pd-locator, plus a CC wrapper that lets autoconf drive the link
+# (crt1.o + libc.a + compiler-rt builtins; musl's vfprintf references the
+# fp128 __*_tf3 helpers, so the aarch64 builtins archive is required).
+# The builtins come from Alpine's clang19-rtlib package (freestanding, no libc
+# dependency). Both downloads are version- and sha256-pinned.
+DROPBEAR_VER=2025.88
+DROPBEAR_SHA256=783f50ea27b17c16da89578fafdb6decfa44bb8f6590e5698a4e4d3672dc53d4
+RTLIB_PATH=v3.22/community/aarch64/clang19-rtlib-0.1.0-r0.apk
+RTLIB_SHA256=afce3cc76d1446465306f82439aa6c76447be0dd3fb46379f4173de7ca412b56
+DB_STATIC="$OUTDIR/dropbear-static"
+
+if [ ! -x "$DB_STATIC/dropbear" ] || [ ! -x "$DB_STATIC/dropbearkey" ]; then
+    echo "fetch-arm64-tools: building static dropbear $DROPBEAR_VER (musl aarch64)..."
+    command -v clang >/dev/null 2>&1 || die "clang not found (needed to build dropbear)"
+    command -v ld.lld >/dev/null 2>&1 || die "ld.lld not found (needed to build dropbear)"
+    DB="$WORK/dropbear"
+    mkdir -p "$DB"
+    curl -fsSL --retry 3 --retry-delay 2 "https://matt.ucc.asn.au/dropbear/releases/dropbear-$DROPBEAR_VER.tar.bz2" \
+        -o "$DB/src.tar.bz2" || die "cannot download dropbear source"
+    echo "$DROPBEAR_SHA256  $DB/src.tar.bz2" | sha256sum -c - >/dev/null \
+        || die "dropbear source sha256 mismatch"
+    curl -fsSL --retry 3 --retry-delay 2 "$ALPINE/$RTLIB_PATH" -o "$DB/rtlib.apk" || die "cannot download clang19-rtlib"
+    echo "$RTLIB_SHA256  $DB/rtlib.apk" | sha256sum -c - >/dev/null \
+        || die "clang19-rtlib sha256 mismatch"
+    BUILTINS="$DB/usr/lib/llvm19/lib/clang/19/lib/linux/libclang_rt.builtins-aarch64.a"
+    tar -xzf "$DB/rtlib.apk" -C "$DB" usr \
+        || die "cannot extract clang19-rtlib (not gzip?)"
+    [ -f "$BUILTINS" ] || die "clang19-rtlib apk lacks the aarch64 builtins archive"
+    tar -xjf "$DB/src.tar.bz2" -C "$DB" || die "cannot extract dropbear source"
+
+    mkdir -p "$OUTDIR/bin"
+    cat > "$OUTDIR/bin/musl-aarch64-cc" <<'CCWRAP'
+#!/bin/sh
+# musl-aarch64-cc — clang→musl-aarch64 compiler/linker wrapper for
+# configure+make builds inside a sysroot that only carries crt1.o/libc.a
+# (no compiler-rt/libgcc from the host toolchain).
+#   compile (-c/-E): forwarded to clang (minus GCC-x86 retpoline flags that
+#                    dropbear's configure blindly accepts when cross-building)
+#   link:            ld.lld -static: crt1.o + objects/archives + libc.a + builtins
+set -u
+SYSROOT=${MUSL_AARCH64_SYSROOT:?MUSL_AARCH64_SYSROOT is not set}
+BUILTINS=${MUSL_AARCH64_BUILTINS:-}
+CLANG="clang --target=aarch64-linux-musl --sysroot=$SYSROOT"
+
+case " $* " in
+  *" -c "*|*" -E "*)
+    set -- $(printf '%s\n' "$@" | grep -vE '^-(mindirect-branch|mfunction-return)')
+    exec $CLANG "$@" ;;
+esac
+case "$1" in
+  -v|-V|--version|-qversion|-version|-dumpmachine) exec $CLANG "$@" ;;
+esac
+
+objs=""; srcs=""; out="a.out"; want_out=0
+for a in "$@"; do
+  if [ "$want_out" = 1 ]; then out="$a"; want_out=0; continue; fi
+  case "$a" in
+    -o) want_out=1 ;;
+    -l*|-Wl,*|-L*|-shared|-static|-rdynamic|-pie|-no-pie|-pthread) : ;;
+    -*) : ;;
+    *.c) srcs="$srcs $a" ;;
+    *.o|*.a) objs="$objs $a" ;;
+    *) : ;;
+  esac
+done
+
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/musl-cc.XXXXXX") || exit 1
+trap 'rm -rf "$tmp"' EXIT
+for s in $srcs; do
+  o="$tmp/$(basename "${s%.c}").o"
+  $CLANG -c "$s" -o "$o" || exit 1
+  objs="$objs $o"
+done
+[ -n "${objs# }" ] || exit 1
+# shellcheck disable=SC2086
+exec ld.lld -o "$out" "$SYSROOT/usr/lib/crt1.o" $objs "$SYSROOT/usr/lib/libc.a" $BUILTINS
+CCWRAP
+    chmod 0755 "$OUTDIR/bin/musl-aarch64-cc"
+
+    SRC="$DB/dropbear-$DROPBEAR_VER"
+    ( cd "$SRC" \
+      && MUSL_AARCH64_SYSROOT="$SYSROOT" \
+         MUSL_AARCH64_BUILTINS="$BUILTINS" \
+         PATH="$OUTDIR/bin:$PATH" \
+         CC=musl-aarch64-cc ./configure --host=aarch64-linux-musl \
+            --disable-zlib --disable-lastlog --disable-utmp --disable-utmpx \
+            --disable-wtmp --disable-wtmpx \
+      && make -j"$(nproc)" PROGRAMS="dropbear dropbearkey" STATIC=1 strip \
+    ) || die "static dropbear build failed"
+    for b in dropbear dropbearkey; do
+        file "$SRC/$b" | grep -q 'statically linked' \
+            || die "$b did not build as a static binary"
+        file "$SRC/$b" | grep -q 'ARM aarch64' \
+            || die "$b did not build as an arm64 ELF"
+    done
+    mkdir -p "$DB_STATIC"
+    install -m 0755 "$SRC/dropbear"     "$DB_STATIC/dropbear"
+    install -m 0755 "$SRC/dropbearkey"  "$DB_STATIC/dropbearkey"
+    echo "fetch-arm64-tools: static dropbear staged in $DB_STATIC"
+fi
+
 {
     echo "suite: $SUITE"
-    for p in "${PKGS[@]}"; do
-        printf '%s: %s\n' "$p" "$(package_field "$p" Version)"
-    done
-    file "$OUTDIR/busybox/busybox" "$TREE/usr/sbin/dropbear" "$IW_TREE/usr/sbin/iw"
+    if [ -f "$WORK/Packages.gz" ]; then
+        for p in "${PKGS[@]}"; do
+            printf '%s: %s\n' "$p" "$(package_field "$p" Version)"
+        done
+    else
+        echo "debian packages: (staged earlier — set PIANO_FORCE_FETCH=1 to refresh)"
+    fi
+    echo "dropbear (static, built from source): $DROPBEAR_VER (sha256 $DROPBEAR_SHA256)"
+    echo "clang19-rtlib (aarch64 builtins): $ALPINE/$RTLIB_PATH (sha256 $RTLIB_SHA256)"
+    file "$OUTDIR/busybox/busybox" "$OUTDIR/dropbear/tree/usr/sbin/dropbear" \
+        "$DB_STATIC/dropbear" "$DB_STATIC/dropbearkey" "$OUTDIR/iw/tree/usr/sbin/iw"
 } | tee "$OUTDIR/TOOLS-PROVENANCE"
 
 echo "fetch-arm64-tools: staged in $OUTDIR"

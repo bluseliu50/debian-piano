@@ -123,6 +123,7 @@ header() {
 pause() { printf '\n[enter] '; read -r _; }
 
 if [ "$MODE" = auto ]; then
+    probe_all
     header
     status_matrix
     piano-collect
