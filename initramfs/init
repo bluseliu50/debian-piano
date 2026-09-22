@@ -1,35 +1,113 @@
 #!/bin/sh
-# piano initramfs /init — early bring-up debug environment.
+# piano initramfs beaconinit — early bring-up debug environment.
 #
-# Scope (v0): mount pseudo-filesystems, bring up the configfs USB NCM
-# gadget with fixed test MACs, start udhcpd + dropbear, and drop to a
-# debug shell on the console. It NEVER writes to any partition and never
-# attempts switch_root until a real root partition has been identified
-# and validated by the operator.
+# Boot contract: ABL v4 RAM boot concatenates the stock vendor_ramdisk after
+# ours, so the entry point must NOT be /init; the kernel cmdline forces
+# rdinit=/beaconinit (see build-initramfs.sh).
+#
+# Phase order is deliberate:
+#   1. beacon (bounded): proves userspace is alive on the framebuffer
+#   2. UDC wait: dwc3 comes up via a long deferred-probe chain
+#      (rpmhcc -> gcc -> icc -> rpmhpd -> phy -> dwc3), give it 120 s
+#   3. NCM gadget + udhcpd + dropbear
+#   4. diagnostics dump printed AFTER the beacon stopped, so fbcon text
+#      stays visible on screen (the beacon scrubs the framebuffer)
 
 export PATH=/bin:/sbin:/usr/bin:/usr/sbin
 
 /bin/busybox --install -s /bin 2>/dev/null
 
-rescue() {
-    echo "piano-init: $*"
-    echo "piano-init: dropping to debug shell"
-    exec setsid cttyhack /bin/sh
+CON=/dev/console
+say() { echo "piano: $*" > "$CON" 2>/dev/null; echo "piano: $*"; }
+
+mkdir -p /proc /sys /dev /run /tmp
+mount -t devtmpfs devtmpfs /dev
+mkdir -p /dev/pts /dev/shm
+mount -t devpts devpts /dev/pts
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t configfs configfs /sys/kernel/config
+
+# --- framebuffer beacon (bounded) -------------------------------------------
+# Alternate white/black fills of the whole splash framebuffer so userspace
+# progress is visible with zero driver dependencies: /dev/fb0 when simpledrm
+# bound, otherwise raw /dev/mem at the downstream cont_splash region
+# 0xfc800000 (kernel built with STRICT_DEVMEM off). 20 rounds only — the
+# beacon deliberately scrubs fbcon text, so all diagnostics are printed
+# after it stops. /run/stop-beacon aborts it early.
+(
+  if [ -e /run/stop-beacon ]; then exit 0; fi
+  FB=/dev/fb0
+  [ -c "$FB" ] || FB=/dev/mem
+  if [ -c "$FB" ]; then
+    WHITE=/tmp/white.bin; BLACK=/tmp/black.bin
+    head -c 1048576 /dev/zero | tr '\000' '\377' > "$WHITE"
+    head -c 1048576 /dev/zero > "$BLACK"
+    SEEK=0; [ "$FB" = /dev/mem ] && SEEK=$((0xfc800000 / 1048576))
+    r=0
+    while [ $r -lt 1 ]; do
+      [ -e /run/stop-beacon ] && exit 0
+      i=0; while [ $i -lt 28 ]; do
+        dd if="$WHITE" of="$FB" bs=1048576 seek=$((SEEK + i)) count=1 2>/dev/null
+        i=$((i + 1))
+      done
+      sleep 0.3
+      i=0; while [ $i -lt 28 ]; do
+        dd if="$BLACK" of="$FB" bs=1048576 seek=$((SEEK + i)) count=1 2>/dev/null
+        i=$((i + 1))
+      done
+      sleep 0.3
+      r=$((r + 1))
+    done
+  fi
+) &
+
+# --- wait for the DWC3 UDC (deferred probe chain) ----------------------------
+say "waiting for UDC (dwc3 deferred-probe chain, up to 120s)"
+UDC=""
+w=0
+while [ $w -lt 20 ]; do
+  for u in /sys/class/udc/*; do [ -e "$u" ] && UDC=${u##*/} && break 2; done
+  sleep 2
+  w=$((w + 2))
+  [ $((w % 60)) -eq 0 ] && say "still waiting for UDC (${w}s)"
+done
+
+# --- diagnostics (printed after the beacon stopped, so text survives) -------
+diag() {
+  say "=== DIAG2 udc='${UDC:-none}' ==="
+  say "--- /sys/class/udc:"
+  ls /sys/class/udc/ > "$CON" 2>&1
+  say "--- usb/dwc3/phy lines (sync_state filtered):"
+  dmesg | grep -iE 'dwc3|ssusb|eusb2|m31|qmp|udc|gadget|phy' | grep -vE 'sync_state|Fixed dependency' | tail -40 > "$CON" 2>&1
+  say "--- EBUSY detail:"
+dmesg | grep -iE 'EBUSY|can.t request' | tail -6 > "$CON" 2>&1
+  say "--- qmp iomem + resources:"
+  grep -iE '88e[0-9a-f]{4}' /proc/iomem > "$CON" 2>&1
+  for d in /sys/bus/platform/devices/*ssphy*; do
+    [ -d "$d" ] && { say "[$d]"; cat "$d/resources" > "$CON" 2>&1; }
+  done
+  say "--- probe failures/errors:"
+dmesg | grep -iE 'fail|error|abort|unable' | grep -vE 'sync_state|deferr' | tail -15 > "$CON" 2>&1
+}
+diag_loop() {
+  while [ ! -e /run/stop-diag ]; do
+    diag
+    say "(loop: touch /run/stop-diag to stop)"
+    sleep 20
+  done
 }
 
-mkdir -p /proc /sys /dev /run
-mount -t devtmpfs devtmpfs /dev || rescue "devtmpfs mount failed"
-mkdir -p /dev/pts /dev/shm
-mount -t devpts devpts /dev/pts || rescue "devpts mount failed"
-mount -t proc proc /proc || rescue "proc mount failed"
-mount -t sysfs sysfs /sys || rescue "sysfs mount failed"
-mount -t configfs configfs /sys/kernel/config || rescue "configfs mount failed (CONFIG_USB_CONFIGFS needed)"
+if [ -z "$UDC" ]; then
+  say "NO UDC after 120s — dumping probe state"
+  diag_loop &
+  exec setsid cttyhack /bin/sh
+fi
+say "UDC found: $UDC"
 
-# --- USB NCM gadget -------------------------------------------------------
-# Fixed test MACs: locally administered, collision-free on the point-to-point
-# USB link. Host side gets an address via DHCP (udhcpd below).
+# --- USB NCM gadget ---------------------------------------------------------
 GADGET=/sys/kernel/config/usb_gadget/piano
-mkdir -p "$GADGET" || rescue "cannot create usb_gadget/piano in configfs"
+mkdir -p "$GADGET" || { diag; exec setsid cttyhack /bin/sh; }
 
 echo 0x18d1 > "$GADGET/idVendor"   # Google
 echo 0xd001 > "$GADGET/idProduct"  # generic NCM debug gadget
@@ -37,31 +115,27 @@ echo 0x0100 > "$GADGET/bcdDevice"
 echo 0x0200 > "$GADGET/bcdUSB"
 
 mkdir -p "$GADGET/strings/0x409"
-echo "piano-linux"      > "$GADGET/strings/0x409/manufacturer"
-echo "piano NCM debug"  > "$GADGET/strings/0x409/product"
-echo "0123456789"       > "$GADGET/strings/0x409/serialnumber"
+echo "piano-linux"     > "$GADGET/strings/0x409/manufacturer"
+echo "piano NCM debug" > "$GADGET/strings/0x409/product"
+echo "0123456789"      > "$GADGET/strings/0x409/serialnumber"
 
-mkdir -p "$GADGET/functions/ncm.usb0" || rescue "cannot create ncm.usb0 function (CONFIG_USB_CONFIGFS_NCM needed)"
-
-# Fixed test MAC addresses (host-facing / gadget-facing)
+mkdir -p "$GADGET/functions/ncm.usb0"
+# Fixed test MACs: locally administered, collision-free on the point-to-point link
 echo "02:11:22:33:44:55" > "$GADGET/functions/ncm.usb0/dev_addr"
 echo "02:66:77:88:99:aa" > "$GADGET/functions/ncm.usb0/host_addr"
 
 mkdir -p "$GADGET/configs/b.1/strings/0x409"
 echo "ncm" > "$GADGET/configs/b.1/strings/0x409/configuration"
-echo 500   > "$GADGET/configs/b.1/MaxPower"
+echo 500  > "$GADGET/configs/b.1/MaxPower"
 ln -sf "$GADGET/functions/ncm.usb0" "$GADGET/configs/b.1"
 
-UDC=""
-for u in /sys/class/udc/*; do [ -e "$u" ] && UDC=${u##*/} && break; done
-[ -n "$UDC" ] || rescue "no UDC found (USB DWC3 not up?)"
-echo "$UDC" > "$GADGET/UDC" || rescue "cannot bind gadget to UDC $UDC"
+echo "$UDC" > "$GADGET/UDC" || { say "gadget bind to $UDC FAILED"; diag; exec setsid cttyhack /bin/sh; }
+say "NCM gadget bound to $UDC"
 
-# --- Network on usb0 ------------------------------------------------------
-ip link set usb0 up || rescue "cannot up usb0"
-ip addr add 10.42.0.2/24 dev usb0 || rescue "cannot address usb0"
+# --- Network on usb0 --------------------------------------------------------
+ip link set usb0 up    || say "WARN ip link usb0 up failed"
+ip addr add 10.42.0.2/24 dev usb0 || say "WARN ip addr usb0 failed"
 
-# DHCP server for the host side (fixed pool, static fallback documented)
 cat > /tmp/udhcpd.conf <<EOF
 interface usb0
 start 10.42.0.10
@@ -71,93 +145,46 @@ opt subnet 255.255.255.0
 opt router 10.42.0.2
 opt lease 3600
 EOF
-touch /var/lib/misc/udhcpd.leases 2>/dev/null || mkdir -p /var/lib/misc && touch /var/lib/misc/udhcpd.leases
-udhcpd /tmp/udhcpd.conf || echo "piano-init: udhcpd failed (host can use static 10.42.0.1/24)"
+mkdir -p /var/lib/misc && touch /var/lib/misc/udhcpd.leases
+udhcpd /tmp/udhcpd.conf >/run/udhcpd.log 2>&1 &
+say "udhcpd launched (host: static 10.42.0.1/24)"
 
-# --- dropbear -------------------------------------------------------------
-mkdir -p /etc/dropbear
-if [ ! -f /etc/dropbear/dropbear_ed25519_host_key ]; then
-    dropbearkey -t ed25519 -f /etc/dropbear/dropbear_ed25519_host_key \
-        || rescue "dropbearkey failed"
-fi
-mkdir -p /root/.ssh
-# Debug access: authorized keys may be injected by editing this file from
-# the initramfs build or via the debug shell.
-dropbear -E -B -p 22 || echo "piano-init: dropbear failed to start"
-
-echo
-echo "piano-init: debug environment up."
-echo "  USB NCM : host 10.42.0.1/24 (DHCP pool 10.42.0.10-20) <-> gadget 10.42.0.2"
-echo "  SSH     : dropbear on 10.42.0.2:22 (root, authorized_keys under /root/.ssh)"
-echo "  Tests   : run 'piano-tests' for the interactive menu"
-echo
-
-# Load the touch stack: the SPI controller first, then the touch driver.
-# The driver defers its own probe until the DSI panel is prepared, so a
-# defer message in dmesg at this point is expected on first boots.
-modprobe spi-geni-qcom 2>/dev/null \
-    || echo "piano-init: spi-geni-qcom not loaded (check modules in initramfs)"
-modprobe nt36532e_ts 2>/dev/null \
-    || echo "piano-init: nt36532e_ts not loaded (check modules in initramfs)"
-
-# Bluetooth: uart14's serdev child binds as soon as hci_uart (with its
-# btqca dependency and the pwrseq-qcom-wcn power-sequencing unit) is
-# present; the QCA firmware download then runs on its own.
-modprobe pwrseq-qcom-wcn 2>/dev/null \
-    || echo "piano-init: pwrseq-qcom-wcn not loaded"
-modprobe hci_uart 2>/dev/null \
-    || echo "piano-init: hci_uart not loaded"
-
-# WLAN: ath12k probes the peach PCI function on pcie0; the MHI firmware
-# download takes a few seconds, so keep it off the interactive path.
-# pcie0's own probe (built-in) defers until the QMP PCIe phy module is
-# present — load it right away, the deferred-probe retry then brings up
-# the controller, and ath12k follows once the PCI function enumerates.
-modprobe phy-qcom-qmp-pcie 2>/dev/null \
-    || echo "piano-init: pcie phy not loaded (pcie0/WLAN stay deferred)"
-( sleep 8
-  modprobe ath12k_wifi7 2>/dev/null || echo "piano-init: ath12k_wifi7 not loaded"
-  modprobe ath12k 2>/dev/null
-) &
-
-# --- battery / ADSP / audio stack -------------------------------------------
-# Order matters: qrtr + our SERVREG_LOC daemon first (the kernel PDR client
-# retries its lookups, but publishing early avoids a slow first attempt),
-# then the ADSP/CDSP remoteprocs, then pmic-glink + battmgr for battery
-# telemetry. The audioreach sound stack is heavy and deferred: ADSP needs
-# several seconds to boot before the card can register.
-modprobe qrtr 2>/dev/null \
-    || echo "piano-init: qrtr not loaded (pd-locator will idle)"
-if command -v piano-pd-locator >/dev/null 2>&1; then
-    ( piano-pd-locator >/dev/null 2>&1 ) &
-    echo "piano-init: piano-pd-locator started (SERVREG_LOC on qrtr)"
+# --- dropbear ---------------------------------------------------------------
+mkdir -p /etc/dropbear /root/.ssh
+# dropbear in the current initramfs is dynamically linked (no libc present),
+# so it cannot exec at all. Detect and fall back to busybox telnetd (static).
+if timeout 15 dropbearkey -t ed25519 -f /etc/dropbear/dropbear_ed25519_host_key >/run/dbk.log 2>&1; then
+  dropbear -E -B -p 22 >/run/dropbear.log 2>&1 && say "dropbear up on :22"
 else
-    echo "piano-init: piano-pd-locator missing (battery/audio services will not come up)"
+  say "dropbear unusable ($(head -c 80 /run/dbk.log 2>/dev/null)); telnetd fallback"
 fi
+busybox telnetd -p 23 -l /bin/sh && say "telnetd up on :23" || say "WARN telnetd failed"
 
-modprobe qcom_q6v5_pas 2>/dev/null \
-    || echo "piano-init: qcom_q6v5_pas not loaded (ADSP/CDSP stay down)"
-modprobe pmic_glink 2>/dev/null \
-    || echo "piano-init: pmic_glink not loaded"
-# Type-C data role / orientation / SS-lane mux events arrive through the
-# pmic_glink altmode client; without it the gadget still enumerates (dwc3
-# role-switch defaults to peripheral, usb2 paths work) but stays at USB2
-# speed and never sees role/orientation changes.
-modprobe pmic_glink_altmode 2>/dev/null \
-    || echo "piano-init: pmic_glink_altmode not loaded (no Type-C role/orientation)"
-modprobe qcom_battmgr 2>/dev/null \
-    || echo "piano-init: qcom_battmgr not loaded (no battery telemetry)"
+say "debug environment up: NCM 10.42.0.2, ssh root@10.42.0.2"
 
-( sleep 12
-  modprobe snd-soc-sc8280xp 2>/dev/null \
-      || echo "piano-init: sound card driver not loaded"
-  modprobe fastrpc 2>/dev/null
-) &
+# Load the touch stack (SPI controller first; the touch driver defers until
+# the DSI panel is prepared — a defer message here is expected on first boots)
+#modprobe spi-geni-qcom 2>/dev/null
+#modprobe nt36532e_ts 2>/dev/null
 
-# Non-interactive boot smoke report (probe status + evidence tarball), kept
-# in the background so the console stays interactive.
+# WLAN/BT/remoteproc/battery stack (best effort, non-fatal)
+#modprobe pwrseq-qcom-wcn 2>/dev/null
+#modprobe hci_uart 2>/dev/null
+#modprobe phy-qcom-qmp-pcie 2>/dev/null
+( sleep 8; modprobe ath12k 2>/dev/null ) &
+#modprobe qrtr 2>/dev/null
+if command -v piano-pd-locator >/dev/null 2>&1; then
+  ( piano-pd-locator >/dev/null 2>&1 ) &
+fi
+#modprobe qcom_q6v5_pas 2>/dev/null
+#modprobe pmic_glink 2>/dev/null
+#modprobe pmic_glink_altmode 2>/dev/null
+#modprobe qcom_battmgr 2>/dev/null
+( sleep 12; modprobe snd-soc-sc8280xp 2>/dev/null; modprobe fastrpc 2>/dev/null ) &
+
+# Non-interactive boot smoke report in the background
 if command -v piano-tests >/dev/null 2>&1; then
-    ( sleep 5; piano-tests --auto > /run/boot-smoke.log 2>&1 ) &
+  ( sleep 5; piano-tests --auto > /run/boot-smoke.log 2>&1 ) &
 fi
 
 exec setsid cttyhack /bin/sh
