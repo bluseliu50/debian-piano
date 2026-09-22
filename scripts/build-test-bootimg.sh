@@ -356,12 +356,29 @@ python3 "$MKBOOTIMG" \
     "${GEOM[@]}" --dtb_offset "$VB_DTB_OFFSET"
 
 # B: header v2 all-in-one fallback
+#
+# Layout: the stock offsets (kernel 0x8000 / ramdisk 0x1000000) come from
+# the GKI split -- stock boot.img carries NO ramdisk, so those offsets were
+# never exercised with an in-image ramdisk. Our ~43MB uncompressed Image
+# ends at ~0x28B0000 and overlaps a ramdisk at 0x1000000 (verified on-device
+# 2026-09-22: black screen, ABL falls back, later attempts report
+# "Load Error"). Give the v2 fallback its own non-overlapping geometry:
+#   kernel  [0x008000, ~0x28B0000)   (~43MB)
+#   dtb     [0x3000000, 0x3020000)   (120KB)
+#   ramdisk [0x4000000, ~0x6400000)  (~37MB gzip)
+V2_DTB_OFFSET=$((0x3000000))
+V2_RAMDISK_OFFSET=$((0x4000000))
+IMAGE_END=$((0x8000 + $(wc -c < "$IMAGE")))
+[ "$IMAGE_END" -lt "$V2_DTB_OFFSET" ] \
+    || die "kernel too large ($(printf '0x%x' "$IMAGE_END") >= 0x$(printf %x "$V2_DTB_OFFSET")) for the v2 fallback layout"
 python3 "$MKBOOTIMG" \
     --kernel "$IMAGE" --ramdisk "$WORK/initramfs.cpio.gz" \
     --dtb "$DTB" \
     --header_version 2 --pagesize "$PAGESIZE" \
     --cmdline "$CMDLINE" \
-    "${GEOM[@]}" --dtb_offset "$VB_DTB_OFFSET" \
+    --base "$VB_BASE" --kernel_offset "$VB_KERNEL_OFFSET" \
+    --ramdisk_offset "$V2_RAMDISK_OFFSET" --tags_offset "$VB_TAGS_OFFSET" \
+    --dtb_offset "$V2_DTB_OFFSET" \
     -o "$OUTPUT_DIR/piano-test-boot-v2.img"
 # --- verification -----------------------------------------------------------
 verify_boot() { # verify_boot FILE
