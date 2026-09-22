@@ -63,10 +63,7 @@ if [ "$VERBOSE" = 1 ]; then
     grab slabtop      sh -c 'cat /proc/slabinfo | head -30'
     grab vmstat       cat /proc/vmstat
     grab timerlist    cat /proc/timer_list
-    grab ps          ps aux
-    # NOTE: never read /proc/kmsg here — with all messages consumed it BLOCKS
-    # and piano-collect would hang forever without producing the tarball.
-    grab firmware-dl  sh -c 'dmesg | grep -iE "firmware|request_firmware" | tail -50'
+    grab firmware-dl  sh -c 'grep -iE "firmware|request_firmware" /proc/kmsg 2>/dev/null | tail -50'
 fi
 
 tar -czf "$out" -C /run "ev-$ts" 2>/dev/null

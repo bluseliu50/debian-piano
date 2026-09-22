@@ -139,55 +139,6 @@ AUDIO_BATT_MODS=(
 AUDIO_BATT_FW_SRC=$FIRMWARE_DIR/non-hlos/image
 PD_LOCATOR_SRC=$REPO_ROOT/initramfs/pd-locator/piano-pd-locator.c
 
-# --- dependency closure -------------------------------------------------------
-# The explicit lists above name the subsystem drivers; their modinfo
-# "depends:" strings name everything modprobe needs beyond built-ins
-# (e.g. pdr_interface, snd-timer, qmi_helpers, kpp/ecdh_generic, btbcm,
-# slimbus, regmap-sdw...). Packing a module without its deps makes
-# modprobe fail wholesale, so the lists are expanded transitively here
-# against the kernel output tree (2026-09-22 lesson: 19 deps were missing
-# and would have killed battery/audio/wlan/bt on first boot).
-declare -A KO_PATH=()
-while IFS= read -r -d '' ko; do
-    base=$(basename "$ko" .ko)
-    [ -n "${KO_PATH[$base]+x}" ] || KO_PATH[$base]="$ko"
-done < <(find "$KERNEL_DIR" -name '*.ko' -not -path '*/dt-venv/*' -print0 2>/dev/null)
-
-BUILTIN_MODS=""
-[ -f "$KERNEL_DIR/modules.builtin" ] && BUILTIN_MODS=$(cat "$KERNEL_DIR/modules.builtin")
-
-is_builtin() { # is_builtin NAME — true when NAME.ko is built into the kernel
-    case "$BUILTIN_MODS" in
-        *"/$1.ko") return 0 ;;
-    esac
-    return 1
-}
-
-expand_closure() { # expand_closure FILE... — print FILE plus transitive deps
-    local -A seen=()
-    local queue=("$@") m base deps d
-    while [ ${#queue[@]} -gt 0 ]; do
-        m=${queue[0]}; queue=("${queue[@]:1}")
-        base=$(basename "$m" .ko)
-        [ -n "${seen[$base]+x}" ] && continue
-        seen[$base]=1
-        printf '%s\n' "$m"
-        deps=$(modinfo -F depends "$m" 2>/dev/null) || continue
-        [ -n "$deps" ] || continue
-        for d in ${deps//,/ }; do
-            [ -n "$d" ] || continue
-            [ -n "${seen[$d]+x}" ] && continue
-            is_builtin "$d" && continue
-            [ -n "${KO_PATH[$d]+x}" ] \
-                || die "dependency '$d' (needed by $base) is neither packed nor built-in — check the kernel build"
-            queue+=("${KO_PATH[$d]}")
-        done
-    done
-}
-
-mapfile -t WLAN_BT_MODS  < <(expand_closure "${WLAN_BT_MODS[@]}")
-mapfile -t AUDIO_BATT_MODS < <(expand_closure "${AUDIO_BATT_MODS[@]}")
-
 missing=()
 command -v python3 >/dev/null 2>&1 || missing+=(python3)
 command -v lz4     >/dev/null 2>&1 || missing+=(lz4)
@@ -253,20 +204,17 @@ trap 'rm -rf "$WORK"' EXIT
 
 # --- arm64 userland ---------------------------------------------------------
 TOOLS="$REPO_ROOT/out/arm64-tools"
-DROPBEAR_STATIC="$TOOLS/dropbear-static"
+DROPBEAR_TREE="$TOOLS/dropbear/tree"
 IW_TREE="$TOOLS/iw/tree"
 APLAY_TREE="$TOOLS/aplay/tree"
 if [ -z "$BUSYBOX_DIR" ]; then
-    if [ ! -x "$TOOLS/busybox/busybox" ] || [ ! -x "$DROPBEAR_STATIC/dropbear" ] \
+    if [ ! -x "$TOOLS/busybox/busybox" ] || [ ! -x "$DROPBEAR_TREE/usr/sbin/dropbear" ] \
        || [ ! -x "$IW_TREE/usr/sbin/iw" ]; then
         "$FETCH_TOOLS" || die "fetch-arm64-tools failed"
     fi
     BUSYBOX_DIR="$TOOLS/busybox"
 fi
-# SSH needs the STATIC dropbear: the Debian dropbear-bin pair is dynamically
-if [ ! -x "$DROPBEAR_STATIC/dropbear" ] || [ ! -x "$DROPBEAR_STATIC/dropbearkey" ]; then
-    die "no static dropbear (run $FETCH_TOOLS)"
-fi
+[ -x "$DROPBEAR_TREE/usr/sbin/dropbear" ] || die "no dropbear tree (run $FETCH_TOOLS)"
 [ -x "$IW_TREE/usr/sbin/iw" ] || die "no iw tree (run $FETCH_TOOLS)"
 [ -x "$APLAY_TREE/usr/bin/aplay" ] || die "no aplay tree (run $FETCH_TOOLS)"
 command -v python3 >/dev/null 2>&1 || die "python3 needed (test tone generation)"
@@ -344,7 +292,7 @@ for m in "${WLAN_BT_MODS[@]}" "${AUDIO_BATT_MODS[@]}"; do
     WLAN_BT_MOD_ARGS+=(--module "$m")
 done
 "$INITRAMFS_BUILDER" \
-    --busybox "$BUSYBOX_DIR" --dropbear "$DROPBEAR_STATIC" --iw-tree "$IW_TREE" \
+    --busybox "$BUSYBOX_DIR" --dropbear-tree "$DROPBEAR_TREE" --iw-tree "$IW_TREE" \
     --pd-locator "$PD_LOCATOR_BIN" \
     --aplay-tree "$APLAY_TREE" \
     --output "$WORK/initramfs.cpio" --compress none \
@@ -359,7 +307,7 @@ if [ "$GEN_KEY" = 1 ]; then
 fi
 
 "$INITRAMFS_BUILDER" \
-    --busybox "$BUSYBOX_DIR" --dropbear "$DROPBEAR_STATIC" --iw-tree "$IW_TREE" \
+    --busybox "$BUSYBOX_DIR" --dropbear-tree "$DROPBEAR_TREE" --iw-tree "$IW_TREE" \
     --pd-locator "$PD_LOCATOR_BIN" \
     --aplay-tree "$APLAY_TREE" \
     --output "$WORK/initramfs.cpio.gz" --compress gzip \
