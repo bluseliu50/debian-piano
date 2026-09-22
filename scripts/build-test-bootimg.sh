@@ -10,20 +10,24 @@
 #               include/generated/utsrelease.h)
 # --firmware-dir local/firmware (only novatek/*.bin are installed)
 #
-# Produces, all verified by unpack_bootimg round-trip:
-#   piano-test-boot.img         v4 boot image, stock layout (empty ramdisk)
-#   piano-test-vendor_boot.img  v4 vendor_boot: PLATFORM initramfs + our DTB
-#   piano-test-boot-ramdisk.img v4 boot image carrying the initramfs itself
-#                               (fallback for abl variants that ignore the
-#                               vendor ramdisk; pair with vendor_boot.img)
-#   piano-test-boot-v2.img      header v2 all-in-one fallback
-#   piano-test-ssh-ed25519      generated SSH access key (0600) unless
-#                               --authorized-keys was given
-#   MANIFEST.txt                sha256s + parameters + next steps
+# PROVEN BOOT CONTRACT (verified on-device 2026-09-22, see
+# docs/device-bringup-runbook.md):
+#   fastboot boot <our v4 boot.img>   (RAM boot)
+#     + CURRENT SLOT's stock vendor_boot  (never replace it — custom
+#       vendor_boot images are rejected by ABL)
+#     + CURRENT SLOT dtbo_b = our dtbo-piano-bringup.img (built by
+#       scripts/build-dtbo.py from boot/dtbo-piano-bringup.dts)
+#     + current slot must be 'b' (fastboot set_active b)
+#   The kernel enforces its own cmdline via CONFIG_CMDLINE_FORCE
+#   ("console=tty0 loglevel=8 fbcon=font:TER16x32 rdinit=/beaconinit"):
+#   the stock vendor_boot cmdline (console=ttynull) must never win.
+#   rdinit=/beaconinit sidesteps the Android first-stage init that the
+#   concatenated stock vendor_ramdisk plants over /init (cpio cascade).
 #
-# Boot-image parameters are taken from boot/stock-boot-params.env and must
-# be CONFIRMED there (stock ROM measurements) — same gate as
-# build-bootimg.sh. The cmdline is operator policy (console selection).
+# The v0/v2/vendor_boot-dtb variants below are KEPT ONLY as reproducers
+# for already-documented dead ends (silent ABL rejection); do not build
+# new bring-up iterations on them.
+#
 
 set -euo pipefail
 
@@ -43,7 +47,9 @@ AUTHORIZED_KEYS=""
 GEN_KEY=0
 ROOT_PASSWORD=""
 ROOT_PASSWORD_SET=0
-CMDLINE="console=tty0 console=ttyMSM0,115200n8 loglevel=7"
+# Note: with CMDLINE_FORCE in the kernel .config this string is recorded
+# for provenance only — the kernel's built-in cmdline wins at runtime.
+CMDLINE="console=tty0 loglevel=8 fbcon=font:TER16x32 rdinit=/beaconinit"
 BUSYBOX_DIR=""
 
 while [ $# -gt 0 ]; do
@@ -52,10 +58,9 @@ while [ $# -gt 0 ]; do
         --firmware-dir)        FIRMWARE_DIR=${2-}; shift 2 ;;
         --output-dir)          OUTPUT_DIR=${2-}; shift 2 ;;
         --authorized-keys)     AUTHORIZED_KEYS=${2-}; shift 2 ;;
-        --generate-access-key) GEN_KEY=1; shift ;;
-        --root-password)        ROOT_PASSWORD=${2-}; ROOT_PASSWORD_SET=1; shift 2 ;;
         --cmdline)             CMDLINE=${2-}; shift 2 ;;
         --busybox)             BUSYBOX_DIR=${2-}; shift 2 ;;
+        --generate-access-key) GEN_KEY=1; shift ;;
         -h|--help)             usage ;;
         *) die "unknown option: $1" ;;
     esac
@@ -139,11 +144,21 @@ command -v python3 >/dev/null 2>&1 || missing+=(python3)
 command -v lz4     >/dev/null 2>&1 || missing+=(lz4)
 command -v gzip    >/dev/null 2>&1 || missing+=(gzip)
 for f in "$MKBOOTIMG" "$UNPACK" "$PARAMS_FILE" "$INITRAMFS_BUILDER" \
-         "$IMAGE" "$DTB" "$TS_MOD" "$SPI_MOD" "$UTSRELEASE_H"; do
+         "$IMAGE" "$DTB" "$SPI_MOD" "$UTSRELEASE_H"; do
     [ -s "$f" ] || missing+=("$f (missing or empty)")
 done
-ls "$FIRMWARE_DIR"/odm/firmware/novatek_nt36532_*.bin >/dev/null 2>&1 \
-    || missing+=("$FIRMWARE_DIR/odm/firmware/novatek_*.bin (touch firmware blobs)")
+# The nt36532e touch driver is cherry-picked from the sheng tree and may
+# lag the current kernel branch (module ABI drift).  It is optional until
+# the DT side catches up: warn and skip instead of failing the build.
+TS_MOD_ARG=()
+if [ -s "$TS_MOD" ]; then
+    TS_MOD_ARG=(--module "$TS_MOD")
+else
+    echo "build-test-bootimg: WARNING: $TS_MOD missing — touch module skipped" >&2
+fi
+NOVATEK_FW_GLOB=("$FIRMWARE_DIR"/odm/firmware/novatek_nt36532_*.bin)
+[ -e "${NOVATEK_FW_GLOB[0]}" ] \
+    || echo "build-test-bootimg: WARNING: no novatek touch firmware blobs" >&2
 for m in "${WLAN_BT_MODS[@]}"; do
     [ -s "$m" ] || missing+=("$m (missing or empty)")
 done
@@ -211,7 +226,7 @@ command -v python3 >/dev/null 2>&1 || die "python3 needed (test tone generation)
 # builder wants DIR/novatek/*.bin. WLAN/BT blobs (the ath12k tree and
 # the qca BT firmware under <firmware-dir>/wifi-bt/) are copied verbatim.
 mkdir -p "$WORK/firmware/novatek"
-cp "$FIRMWARE_DIR"/odm/firmware/novatek_nt36532_*.bin "$WORK/firmware/novatek/"
+cp -t "$WORK/firmware/novatek/" "${NOVATEK_FW_GLOB[@]}" 2>/dev/null || true
 cp -a "$WLAN_BT_FW_DIR/qca" "$WLAN_BT_FW_DIR/ath12k" "$WORK/firmware/"
 
 # remoteproc firmware: stock NON-HLOS image names adsp/cdsp segments as
@@ -281,7 +296,7 @@ done
     --pd-locator "$PD_LOCATOR_BIN" \
     --aplay-tree "$APLAY_TREE" \
     --output "$WORK/initramfs.cpio" --compress none \
-    --module "$TS_MOD" --module "$SPI_MOD" --kernel-version "$KVER" \
+    "${TS_MOD_ARG[@]}" --module "$SPI_MOD" --kernel-version "$KVER" \
     "${WLAN_BT_MOD_ARGS[@]}" \
     --firmware-dir "$WORK/firmware" \
     "${ACCESS_ARGS[@]}" "${KEY_ARGS[@]}"
@@ -296,7 +311,7 @@ fi
     --pd-locator "$PD_LOCATOR_BIN" \
     --aplay-tree "$APLAY_TREE" \
     --output "$WORK/initramfs.cpio.gz" --compress gzip \
-    --module "$TS_MOD" --module "$SPI_MOD" --kernel-version "$KVER" \
+    "${TS_MOD_ARG[@]}" --module "$SPI_MOD" --kernel-version "$KVER" \
     "${WLAN_BT_MOD_ARGS[@]}" \
     --firmware-dir "$WORK/firmware" \
     "${ACCESS_ARGS[@]}" "${KEY_ARGS[@]}"
