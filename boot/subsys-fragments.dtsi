@@ -329,6 +329,40 @@
 	fragment@225 {
 		target = <&tlmm>;
 		__overlay__ {
+			/* master unlock: the vendor node's "qcom,sun-tlmm" matches
+			 * nothing in the mainline pinctrl-sm8750 driver, so the TLMM
+			 * never probed: no gpiochip, and every device referencing any
+			 * pinctrl state (uart14, spi2, pcie0, wcn7850-pmu, ...) sat
+			 * in fw_devlink supplier-wait deferral forever.  Prepend the
+			 * mainline compatible; the node's reg/irq/gpio props are
+			 * already mainline-shaped. */
+			compatible = "qcom,sm8750-tlmm", "qcom,sun-tlmm";
+
+			/* pcie0 perst/clkreq/wake, copied from the upstream
+			 * pcie0-default-state (gpio102/103/104) */
+			pcie0_pins_ml: pcie0-pins-state {
+				perst-pins {
+					pins = "gpio102";
+					function = "gpio";
+					drive-strength = <2>;
+					bias-pull-down;
+				};
+
+				clkreq-pins {
+					pins = "gpio103";
+					function = "pcie0_clk_req_n";
+					drive-strength = <2>;
+					bias-pull-up;
+				};
+
+				wake-pins {
+					pins = "gpio104";
+					function = "gpio";
+					drive-strength = <2>;
+					bias-pull-up;
+				};
+			};
+
 			wlan_en_ml: wlan-en-state {
 				pins = "gpio16";
 				function = "gpio";
@@ -430,6 +464,12 @@
 
 			pinctrl-names = "default";
 			pinctrl-0 = <&qup_uart14_default_ml>, <&qup_uart14_cts_rts_ml>;
+			/* zero-length properties delete the vendor sleep/active
+			 * state phandles at apply time (fw_devlink scans every
+			 * pinctrl-N prop, and those states mux via the missing
+			 * qup2_se6_lN function variants) */
+			pinctrl-1;
+			pinctrl-2;
 
 			bluetooth {
 				compatible = "qcom,wcn7850-bt";
@@ -462,6 +502,7 @@
 
 			pinctrl-names = "default";
 			pinctrl-0 = <&qup1_se2_spi_default_ml>;
+			pinctrl-1;
 
 			touchscreen@0 {
 				compatible = "novatek,NVT-ts-spi";
@@ -1027,6 +1068,9 @@
 
 			perst-gpios = <&tlmm 102 GPIO_ACTIVE_LOW>;
 			wake-gpios = <&tlmm 104 GPIO_ACTIVE_LOW>;
+			pinctrl-names = "default";
+			pinctrl-0 = <&pcie0_pins_ml>;
+			pinctrl-1;
 
 			phys = <&pcie0_phy_ml>;
 			phy-names = "pciephy";
