@@ -56,6 +56,7 @@ done
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 PARAMS_FILE="$REPO_ROOT/boot/stock-boot-params.env"
 MKBOOTIMG="$REPO_ROOT/mkbootimg/mkbootimg.py"
+UNPACK="$REPO_ROOT/mkbootimg/unpack_bootimg.py"
 BUILD_DTBO="$REPO_ROOT/scripts/build-dtbo.py"
 SPLICE="$REPO_ROOT/boot/splice-subsys.py"
 DTBO_DTS="$REPO_ROOT/boot/dtbo-piano-subsys.dts"
