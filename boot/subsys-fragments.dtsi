@@ -128,10 +128,15 @@
 	};
 
 	/* apps_smmu: mainline compatible so arm-smmu probes the vendor node */
+	/* apps_smmu stays on its downstream compatible ("qcom,qsmmu-v500"):
+	 * the vendor node structure does not match the mainline arm-smmu
+	 * driver (single-region reg, qcom,use-3-lvl-tables), and forcing
+	 * the mainline compatible was present in both freeze configurations.
+	 * Mainline smmu activation needs a proper node rewrite, later. */
 	fragment@228 {
 		target = <&apps_smmu>;
 		__overlay__ {
-			compatible = "qcom,sm8750-smmu-500", "qcom,smmu-500", "arm,mmu-500";
+			qcom,use-3-lvl-tables;
 		};
 	};
 
@@ -154,8 +159,7 @@
 			cx-uV-uA;
 			mx-uV-uA;
 			reg-names;
-			interconnects = <&lpass_lpicx_noc MASTER_LPASS_PROC QCOM_ICC_TAG_ALWAYS
-					 &mc_virt SLAVE_EBI1 QCOM_ICC_TAG_ALWAYS>;
+			interconnects;
 			status = "okay";
 		};
 	};
@@ -186,8 +190,9 @@
 
 					q6apmdai_ml: dais {
 						compatible = "qcom,q6apm-dais";
-						iommus = <&apps_smmu 0x1001 0x80>,
-							 <&apps_smmu 0x1041 0x20>;
+						/* no iommus while apps_smmu stays on its
+						 * downstream compatible (qcom,qsmmu-v500);
+						 * audio DMA runs direct for bring-up */
 					};
 				};
 
@@ -224,8 +229,7 @@
 			mx-uV-uA;
 			nsp-uV-uA;
 			reg-names;
-			interconnects = <&nsp_noc MASTER_CDSP_PROC QCOM_ICC_TAG_ALWAYS
-					 &mc_virt SLAVE_EBI1 QCOM_ICC_TAG_ALWAYS>;
+			interconnects;
 			status = "okay";
 		};
 	};
@@ -402,6 +406,12 @@
 			status = "okay";
 			current-speed = <115200>;
 
+			/* mainline SE clock: the vendor node's clock phandle-args
+			 * index downstream gcc numbering, meaningless against the
+			 * mainline gcc driver this overlay installs */
+			clocks = <&gcc GCC_QUPV3_WRAP2_S6_CLK>;
+			clock-names = "se";
+
 			pinctrl-names = "default";
 			pinctrl-0 = <&qup_uart14_default_ml>, <&qup_uart14_cts_rts_ml>;
 
@@ -429,6 +439,10 @@
 		__overlay__ {
 			compatible = "qcom,geni-spi";
 			status = "okay";
+
+			/* mainline SE clock, same rationale as uart14 */
+			clocks = <&gcc GCC_QUPV3_WRAP1_S2_CLK>;
+			clock-names = "se";
 
 			pinctrl-names = "default", "sleep";
 			pinctrl-0 = <&qupv3_se2_spi_pins>;
