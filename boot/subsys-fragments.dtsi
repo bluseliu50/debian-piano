@@ -329,6 +329,16 @@
 	fragment@225 {
 		target = <&tlmm>;
 		__overlay__ {
+			/* Drive the vendor TLMM node with the UPSTREAM sm8750
+			 * driver (PINCTRL_SM8750=y).  The Sun port crashed both
+			 * field boots (bisected: the no-Sun kernel boots clean).
+			 * The vendor node spans 0xf000000..0xf200000 with pin
+			 * registers at +0x100000; the upstream driver expects the
+			 * pin-window base directly, so rebase reg to 0x0f100000 /
+			 * 0x102000 — identical physical registers, the geometry
+			 * upstream sm8750.dtsi uses. */
+			compatible = "qcom,sm8750-tlmm", "qcom,sun-tlmm";
+			reg = <0x0 0x0f100000 0x0 0x102000>;
 			wlan_en_ml: wlan-en-state {
 				pins = "gpio16";
 				function = "gpio";
@@ -377,61 +387,30 @@
 			};
 
 			qup1_se2_spi_default_ml: qup1-se2-spi-default-state {
-				/* Sun TLMM exposes the lane-specific functions. */
-				miso-pins {
-					pins = "gpio40";
-					function = "qup1_se2_l0";
-					drive-strength = <6>;
-					bias-disable;
-				};
-				mosi-pins {
-					pins = "gpio41";
-					function = "qup1_se2_l1";
-					drive-strength = <6>;
-					bias-disable;
-				};
-				clk-pins {
-					pins = "gpio42";
-					function = "qup1_se2_l2";
-					drive-strength = <6>;
-					bias-disable;
-				};
-				cs-pins {
-					pins = "gpio43";
-					function = "qup1_se2_l3";
-					drive-strength = <6>;
-					bias-disable;
-				};
+				/* upstream pinctrl-sm8750 exposes the plain qup1_se2
+				 * function (the per-lane variants exist only in the
+				 * vendor Sun driver); same mux value per pin.
+				 * MISO 40, MOSI 41, CLK 42, CS 43. */
+				pins = "gpio40", "gpio41", "gpio42", "gpio43";
+				function = "qup1_se2";
+				drive-strength = <6>;
+				bias-disable;
 			};
 
 			qup_uart14_default_ml: qup-uart14-default-state {
-				tx-pins {
-					pins = "gpio24";
-					function = "qup2_se6_l0";
-					drive-strength = <2>;
-					bias-disable;
-				};
-				rx-pins {
-					pins = "gpio25";
-					function = "qup2_se6_l1";
-					drive-strength = <2>;
-					bias-disable;
-				};
+				/* TX 24, RX 25 — plain function, same rationale */
+				pins = "gpio24", "gpio25";
+				function = "qup2_se6";
+				drive-strength = <2>;
+				bias-disable;
 			};
 
 			qup_uart14_cts_rts_ml: qup-uart14-cts-rts-state {
-				cts-pins {
-					pins = "gpio26";
-					function = "qup2_se6_l2";
-					drive-strength = <2>;
-					bias-pull-down;
-				};
-				rts-pins {
-					pins = "gpio27";
-					function = "qup2_se6_l3";
-					drive-strength = <2>;
-					bias-pull-down;
-				};
+				/* CTS 26, RTS 27 */
+				pins = "gpio26", "gpio27";
+				function = "qup2_se6";
+				drive-strength = <2>;
+				bias-pull-down;
 			};
 
 			ts_irq_default_ml: ts-irq-default-state {
@@ -465,6 +444,14 @@
 			pinctrl-names = "default";
 			pinctrl-0 = <&qup_uart14_default_ml>, <&qup_uart14_cts_rts_ml>;
 
+			/* zero-length props delete the vendor active/sleep/shutdown
+			 * phandles at apply time: the pinctrl core walks every
+			 * pinctrl-N, and those states mux via qup2_se6_lN lane
+			 * variants that only the vendor Sun driver implements */
+			pinctrl-1;
+			pinctrl-2;
+			pinctrl-3;
+
 			bluetooth {
 				compatible = "qcom,wcn7850-bt";
 
@@ -495,6 +482,10 @@
 			clock-names = "se";
 
 			pinctrl-names = "default";
+
+			/* same deletion for the vendor sleep state (both the base
+			 * node and the stock fragment@55 leave one behind) */
+			pinctrl-1;
 			pinctrl-0 = <&qup1_se2_spi_default_ml>;
 
 			touchscreen@0 {
