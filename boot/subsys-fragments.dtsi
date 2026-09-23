@@ -376,28 +376,62 @@
 				output-low;
 			};
 
-					qup1_se2_spi_default_ml: qup1-se2-spi-default-state {
-				/* MISO 40, MOSI 41, CLK 42, CS 43 */
-				pins = "gpio40", "gpio41", "gpio42", "gpio43";
-				function = "qup1_se2";
-				drive-strength = <6>;
-				bias-disable;
+			qup1_se2_spi_default_ml: qup1-se2-spi-default-state {
+				/* Sun TLMM exposes the lane-specific functions. */
+				miso-pins {
+					pins = "gpio40";
+					function = "qup1_se2_l0";
+					drive-strength = <6>;
+					bias-disable;
+				};
+				mosi-pins {
+					pins = "gpio41";
+					function = "qup1_se2_l1";
+					drive-strength = <6>;
+					bias-disable;
+				};
+				clk-pins {
+					pins = "gpio42";
+					function = "qup1_se2_l2";
+					drive-strength = <6>;
+					bias-disable;
+				};
+				cs-pins {
+					pins = "gpio43";
+					function = "qup1_se2_l3";
+					drive-strength = <6>;
+					bias-disable;
+				};
 			};
 
-		qup_uart14_default_ml: qup-uart14-default-state {
-				/* TX, RX */
-				pins = "gpio24", "gpio25";
-				function = "qup2_se6";
-				drive-strength = <2>;
-				bias-disable;
+			qup_uart14_default_ml: qup-uart14-default-state {
+				tx-pins {
+					pins = "gpio24";
+					function = "qup2_se6_l0";
+					drive-strength = <2>;
+					bias-disable;
+				};
+				rx-pins {
+					pins = "gpio25";
+					function = "qup2_se6_l1";
+					drive-strength = <2>;
+					bias-disable;
+				};
 			};
 
 			qup_uart14_cts_rts_ml: qup-uart14-cts-rts-state {
-				/* CTS, RTS */
-				pins = "gpio26", "gpio27";
-				function = "qup2_se6";
-				drive-strength = <2>;
-				bias-pull-down;
+				cts-pins {
+					pins = "gpio26";
+					function = "qup2_se6_l2";
+					drive-strength = <2>;
+					bias-pull-down;
+				};
+				rts-pins {
+					pins = "gpio27";
+					function = "qup2_se6_l3";
+					drive-strength = <2>;
+					bias-pull-down;
+				};
 			};
 
 			ts_irq_default_ml: ts-irq-default-state {
