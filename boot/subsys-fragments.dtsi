@@ -145,8 +145,16 @@
 	 * downstream interconnect phandle-args are deleted — the mainline
 	 * driver uses rpmhpd power domains and never touches either, and the
 	 * stale entries only risk fw_devlink fake suppliers. */
+	/* NOTE: target-path, NOT target = <&adsp_pas>: dtc reconstructs a
+	 * LOCAL label for adsp_pas from the nopd9 base's __symbols__ (it
+	 * points inside fragment@60's overlay), which compiles the target
+	 * as a local-phandle reference resolved against this dtbo's own
+	 * node instead of the live base tree — the fragment then lands on
+	 * a phantom and the compatible override never reaches the real
+	 * node (observed: live compat stayed "qcom,sun-adsp-pas", adsp
+	 * never probed, while cdsp_pas is not a local label and worked). */
 	fragment@220 {
-		target = <&adsp_pas>;
+		target-path = "/soc/remoteproc-adsp@03000000";
 		__overlay__ {
 			compatible = "qcom,sm8750-adsp-pas", "qcom,sm8550-adsp-pas";
 			firmware-name = "qcom/sm8750/adsp.mbn", "qcom/sm8750/adsp_dtb.mbn";
