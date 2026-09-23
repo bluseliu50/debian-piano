@@ -21,7 +21,9 @@ extra_includes = anchor + """
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/clock/qcom,rpmh.h>
 #include <dt-bindings/sound/qcom,q6dsp-lpass-ports.h>
-#include <dt-bindings/soc/qcom,gpr.h>"""
+#include <dt-bindings/soc/qcom,gpr.h>
+#include <dt-bindings/interconnect/qcom,sm8750-rpmh.h>
+#include <dt-bindings/interconnect/qcom,icc.h>"""
 base = base.replace(anchor, extra_includes, 1)
 
 # splice the chunk before the final closing brace of the root node

@@ -154,8 +154,8 @@
 			cx-uV-uA;
 			mx-uV-uA;
 			reg-names;
-			interconnects;
-			interconnect-names;
+			interconnects = <&lpass_lpicx_noc MASTER_LPASS_PROC QCOM_ICC_TAG_ALWAYS
+					 &mc_virt SLAVE_EBI1 QCOM_ICC_TAG_ALWAYS>;
 			status = "okay";
 		};
 	};
@@ -224,8 +224,8 @@
 			mx-uV-uA;
 			nsp-uV-uA;
 			reg-names;
-			interconnects;
-			interconnect-names;
+			interconnects = <&nsp_noc MASTER_CDSP_PROC QCOM_ICC_TAG_ALWAYS
+					 &mc_virt SLAVE_EBI1 QCOM_ICC_TAG_ALWAYS>;
 			status = "okay";
 		};
 	};

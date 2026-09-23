@@ -162,6 +162,17 @@ busybox telnetd -p 23 -l /bin/sh && say "telnetd up on :23" || say "WARN telnetd
 
 say "debug environment up: NCM 10.42.0.2, ssh root@10.42.0.2"
 
+# --- module/firmware search paths ---------------------------------------------
+# The stock vendor ramdisk (cpio cascade, runbook §7.3) drops a real /lib
+# directory on top of the rootfs, so OUR payload under /usr/lib is not
+# found by modprobe (/lib/modules) or firmware_class (/lib/firmware).
+# Repoint both before any modprobe runs.
+rm -rf /lib/modules 2>/dev/null
+ln -sfn /usr/lib/modules /lib/modules
+mkdir -p /lib/firmware
+for d in qcom ath12k qca novatek; do
+    ln -sfn /usr/lib/firmware/$d /lib/firmware/$d
+done
 # --- subsystem bring-up, staged AFTER telnetd is up ---------------------------
 # Safety model (runbook §9): every risky driver is a module, the debug
 # shell is already alive, and pcie (the least proven MMIO path) loads
