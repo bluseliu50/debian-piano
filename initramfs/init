@@ -184,6 +184,8 @@ stage_log() { echo "piano-stage: $*" > "$CON" 2>/dev/null; echo "piano-stage: $*
   # Stage A: qrtr + remoteprocs (ADSP auto-boots, loads qcom/sm8750/adsp.mbn;
   # CDSP follows on the same module). pd-locator answers the in-kernel PDR
   # service-locator queries that gate the ADSP audio/charger service kernels.
+  # flight recorder first: ramoops (pstore) captures this boot's console
+  modprobe ramoops 2>/dev/null
   stage_log "A: qrtr"
   modprobe qrtr
   modprobe qrtr-smd
