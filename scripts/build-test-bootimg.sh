@@ -8,8 +8,9 @@
 #   boot.img      v4 boot image wrapping the kernel Image (which embeds the
 #                 debug initramfs via CONFIG_INITRAMFS_SOURCE). The external
 #                 ramdisk is empty — the only image form ABL accepts.
-#   dtbo.img      USB-nopd9 overlay, deterministic build from
-#                 boot/dtbo-piano-usb-nopd9.dts; flash to dtbo_b before boot.
+#   dtbo.img      Subsystem bring-up overlay (dtbo-piano-subsys.dts,
+#                 spliced from the device-verified USB-nopd9 base plus
+#                 boot/subsys-fragments.dtsi); flash to dtbo_b before boot.
 #   MANIFEST.txt  provenance, hashes, verified boot recipe.
 #
 # PROVEN BOOT CONTRACT (on-device 2026-09-22/23, umbrella runbook §7):
@@ -55,9 +56,9 @@ done
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 PARAMS_FILE="$REPO_ROOT/boot/stock-boot-params.env"
 MKBOOTIMG="$REPO_ROOT/mkbootimg/mkbootimg.py"
-UNPACK="$REPO_ROOT/mkbootimg/unpack_bootimg.py"
 BUILD_DTBO="$REPO_ROOT/scripts/build-dtbo.py"
-DTBO_DTS="$REPO_ROOT/boot/dtbo-piano-usb-nopd9.dts"
+SPLICE="$REPO_ROOT/boot/splice-subsys.py"
+DTBO_DTS="$REPO_ROOT/boot/dtbo-piano-subsys.dts"
 
 IMAGE=$KERNEL_DIR/arch/arm64/boot/Image
 UTSRELEASE_H=$KERNEL_DIR/include/generated/utsrelease.h
@@ -111,8 +112,8 @@ python3 "$MKBOOTIMG" \
     --ramdisk_offset "$VB_RAMDISK_OFFSET" --tags_offset "$VB_TAGS_OFFSET" \
     -o "$OUTPUT_DIR/boot.img"
 
-# --- dtbo.img: deterministic USB-nopd9 overlay --------------------------------
-echo "build-test-bootimg: building dtbo.img from $DTBO_DTS"
+# --- dtbo.img: subsystem overlay (nopd9 base + subsys-fragments.dtsi) ---------
+python3 "$SPLICE"
 python3 "$BUILD_DTBO" --dts "$DTBO_DTS" --output "$OUTPUT_DIR/dtbo.img"
 
 # --- verification --------------------------------------------------------------

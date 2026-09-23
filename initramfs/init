@@ -162,29 +162,65 @@ busybox telnetd -p 23 -l /bin/sh && say "telnetd up on :23" || say "WARN telnetd
 
 say "debug environment up: NCM 10.42.0.2, ssh root@10.42.0.2"
 
-# Load the touch stack (SPI controller first; the touch driver defers until
-# the DSI panel is prepared — a defer message here is expected on first boots)
-#modprobe spi-geni-qcom 2>/dev/null
-#modprobe nt36532e_ts 2>/dev/null
+# --- subsystem bring-up, staged AFTER telnetd is up ---------------------------
+# Safety model (runbook §9): every risky driver is a module, the debug
+# shell is already alive, and pcie (the least proven MMIO path) loads
+# LAST. A hang or crash in any stage leaves the shell + earlier stages
+# working; the modprobe list is bisectable without touching the DTBO.
+stage_log() { echo "piano-stage: $*" > "$CON" 2>/dev/null; echo "piano-stage: $*"; }
 
-# WLAN/BT/remoteproc/battery stack (best effort, non-fatal)
-#modprobe pwrseq-qcom-wcn 2>/dev/null
-#modprobe hci_uart 2>/dev/null
-#modprobe phy-qcom-qmp-pcie 2>/dev/null
-( sleep 8; modprobe ath12k 2>/dev/null ) &
-#modprobe qrtr 2>/dev/null
-if command -v piano-pd-locator >/dev/null 2>&1; then
-  ( piano-pd-locator >/dev/null 2>&1 ) &
-fi
-#modprobe qcom_q6v5_pas 2>/dev/null
-#modprobe pmic_glink 2>/dev/null
-#modprobe pmic_glink_altmode 2>/dev/null
-#modprobe qcom_battmgr 2>/dev/null
-( sleep 12; modprobe snd-soc-sc8280xp 2>/dev/null; modprobe fastrpc 2>/dev/null ) &
+(
+  # Stage A: qrtr + remoteprocs (ADSP auto-boots, loads qcom/sm8750/adsp.mbn;
+  # CDSP follows on the same module). pd-locator answers the in-kernel PDR
+  # service-locator queries that gate the ADSP audio/charger service kernels.
+  stage_log "A: qrtr"
+  modprobe qrtr
+  modprobe qrtr-smd
+  stage_log "A: qcom_q6v5_pas (adsp+cdsp)"
+  modprobe qcom_q6v5_pas
+  sleep 5
+  if command -v piano-pd-locator >/dev/null 2>&1; then
+    stage_log "A: piano-pd-locator (SERVREG_LOC)"
+    piano-pd-locator >/run/pd-locator.log 2>&1 &
+  fi
+  sleep 3
+  stage_log "A: pmic_glink + qcom_battmgr"
+  modprobe pmic_glink
+  modprobe qcom_battmgr
 
-# Non-interactive boot smoke report in the background
+  # Stage B: touch (SPI controller, then the NT36532E driver; panel-follower
+  # is not used — the display runs on the ABL simple-framebuffer)
+  stage_log "B: touch"
+  modprobe spi-geni-qcom
+  modprobe nt36532e_ts
+
+  # Stage C: audio — the machine driver pulls the whole audioreach chain
+  # through modules.dep (q6apm/q6prm/lpass macros/soundwire/wcd939x/wsa884x)
+  sleep 5
+  stage_log "C: audio (snd-soc-sc8280xp chain)"
+  modprobe snd-soc-sc8280xp
+
+  # Stage D: BT — pwrseq powers the WCN7850 BT half, hci_uart+btqca attach
+  # the serdev child on uart14 and download qca/hmt* firmware
+  stage_log "D: bluetooth"
+  modprobe pwrseq-qcom-wcn
+  modprobe hci_uart
+  modprobe btqca
+
+  # Stage E: WLAN, LAST on purpose — pcie is the least proven MMIO path.
+  # phy -> controller -> ath12k (peach 17cb:110e)
+  stage_log "E: pcie+ath12k (last)"
+  modprobe phy-qcom-qmp-pcie
+  modprobe pcie-qcom
+  sleep 3
+  modprobe ath12k
+  stage_log "all stages done"
+) > /run/bringup-stages.log 2>&1 &
+
+# Non-interactive boot smoke report in the background (late enough for
+# the staged modules above to have probed)
 if command -v piano-tests >/dev/null 2>&1; then
-  ( sleep 5; piano-tests --auto > /run/boot-smoke.log 2>&1 ) &
+  ( sleep 40; piano-tests --auto > /run/boot-smoke.log 2>&1 ) &
 fi
 
 exec setsid cttyhack /bin/sh

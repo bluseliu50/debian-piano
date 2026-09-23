@@ -1,0 +1,1046 @@
+	/* ====================================================================
+	 * Subsystem bring-up fragments (2026-09-23), appended on top of the
+	 * device-verified USB-nopd9 fragment set.  Everything risky is bound
+	 * to module drivers (adsp/cdsp PAS, pcie, ath12k, audio, hci_uart,
+	 * nt36532e touch, pmic-glink) and loaded in a controlled order from
+	 * the initramfs after telnetd is up — worst case a subsystem stays
+	 * dark without taking the debug shell down.
+	 *
+	 * Boot-time (built-in) additions are limited to providers:
+	 * rpmh-rsc/rpmhpd/rpmhcc + the full qnoc set + uart14 (geni-serial)
+	 * + apps_smmu compatible.  The USB/display chain from nopd9 is kept
+	 * byte-for-byte (fragments @200-@216, @219 above).
+	 * ==================================================================== */
+
+	/* rpmhpd: mainline power domains as a direct child of apps_rsc
+	 * (children of the non-compatible downstream drv@2 node are never
+	 * instantiated as platform devices).  OPP levels mirror the upstream
+	 * sm8750.dtsi rpmhpd table. */
+	fragment@218 {
+		target = <&apps_rsc>;
+		__overlay__ {
+			rpmhpd_ml: power-controller-ml {
+				compatible = "qcom,sm8750-rpmhpd";
+
+				operating-points-v2 = <&rpmhpd_opp_table_ml>;
+				#power-domain-cells = <1>;
+
+				rpmhpd_opp_table_ml: opp-table {
+					compatible = "operating-points-v2";
+
+					opp-16  { opp-level = <RPMH_REGULATOR_LEVEL_RETENTION>; };
+					opp-48  { opp-level = <RPMH_REGULATOR_LEVEL_MIN_SVS>; };
+					opp-50  { opp-level = <RPMH_REGULATOR_LEVEL_LOW_SVS_D3>; };
+					opp-52  { opp-level = <RPMH_REGULATOR_LEVEL_LOW_SVS_D2>; };
+					opp-56  { opp-level = <RPMH_REGULATOR_LEVEL_LOW_SVS_D1>; };
+					opp-60  { opp-level = <RPMH_REGULATOR_LEVEL_LOW_SVS_D0>; };
+					opp-64  { opp-level = <RPMH_REGULATOR_LEVEL_LOW_SVS>; };
+					opp-80  { opp-level = <RPMH_REGULATOR_LEVEL_LOW_SVS_L1>; };
+					opp-128 { opp-level = <RPMH_REGULATOR_LEVEL_SVS>; };
+					opp-144 { opp-level = <RPMH_REGULATOR_LEVEL_SVS_L0>; };
+					opp-192 { opp-level = <RPMH_REGULATOR_LEVEL_SVS_L1>; };
+					opp-224 { opp-level = <RPMH_REGULATOR_LEVEL_SVS_L2>; };
+					opp-256 { opp-level = <RPMH_REGULATOR_LEVEL_NOM>; };
+					opp-320 { opp-level = <RPMH_REGULATOR_LEVEL_NOM_L1>; };
+					opp-336 { opp-level = <RPMH_REGULATOR_LEVEL_NOM_L2>; };
+					opp-384 { opp-level = <RPMH_REGULATOR_LEVEL_TURBO>; };
+					opp-416 { opp-level = <RPMH_REGULATOR_LEVEL_TURBO_L1>; };
+					opp-432 { opp-level = <RPMH_REGULATOR_LEVEL_TURBO_L2>; };
+					opp-448 { opp-level = <RPMH_REGULATOR_LEVEL_TURBO_L3>; };
+					opp-452 { opp-level = <RPMH_REGULATOR_LEVEL_TURBO_L4>; };
+				};
+			};
+		};
+	};
+
+	/* complete the sm8750 qnoc set (@203-@206 above already carry
+	 * mc_virt / config_noc / aggre1_noc / gem_noc) */
+	fragment@230 {
+		target = <&system_noc>;
+		__overlay__ {
+			qcom,bcm-voter-names = "hlos";
+			qcom,bcm-voters = <&apps_bcm_voter_ml>;
+			#interconnect-cells = <2>;
+				compatible = "qcom,sm8750-system-noc"; };
+	};
+
+	fragment@231 {
+		target = <&aggre2_noc>;
+		__overlay__ {
+			qcom,bcm-voter-names = "hlos";
+			qcom,bcm-voters = <&apps_bcm_voter_ml>;
+			#interconnect-cells = <2>;
+				compatible = "qcom,sm8750-aggre2-noc"; };
+	};
+
+	fragment@232 {
+		target = <&mmss_noc>;
+		__overlay__ {
+			qcom,bcm-voter-names = "hlos";
+			qcom,bcm-voters = <&apps_bcm_voter_ml>;
+			#interconnect-cells = <2>;
+				compatible = "qcom,sm8750-mmss-noc"; };
+	};
+
+	fragment@233 {
+		target = <&clk_virt>;
+		__overlay__ {
+			qcom,bcm-voter-names = "hlos";
+			qcom,bcm-voters = <&apps_bcm_voter_ml>;
+			#interconnect-cells = <2>;
+				compatible = "qcom,sm8750-clk-virt"; };
+	};
+
+	fragment@234 {
+		target = <&nsp_noc>;
+		__overlay__ {
+			qcom,bcm-voter-names = "hlos";
+			qcom,bcm-voters = <&apps_bcm_voter_ml>;
+			#interconnect-cells = <2>;
+				compatible = "qcom,sm8750-nsp-noc"; };
+	};
+
+	fragment@235 {
+		target = <&lpass_ag_noc>;
+		__overlay__ {
+			qcom,bcm-voter-names = "hlos";
+			qcom,bcm-voters = <&apps_bcm_voter_ml>;
+			#interconnect-cells = <2>;
+				compatible = "qcom,sm8750-lpass-ag-noc"; };
+	};
+
+	fragment@236 {
+		target = <&lpass_lpiaon_noc>;
+		__overlay__ {
+			qcom,bcm-voter-names = "hlos";
+			qcom,bcm-voters = <&apps_bcm_voter_ml>;
+			#interconnect-cells = <2>;
+				compatible = "qcom,sm8750-lpass-lpiaon-noc"; };
+	};
+
+	fragment@237 {
+		target = <&lpass_lpicx_noc>;
+		__overlay__ {
+			qcom,bcm-voter-names = "hlos";
+			qcom,bcm-voters = <&apps_bcm_voter_ml>;
+			#interconnect-cells = <2>;
+				compatible = "qcom,sm8750-lpass-lpicx-noc"; };
+	};
+
+	/* apps_smmu: mainline compatible so arm-smmu probes the vendor node */
+	fragment@228 {
+		target = <&apps_smmu>;
+		__overlay__ {
+			compatible = "qcom,sm8750-smmu-500", "qcom,smmu-500", "arm,mmu-500";
+		};
+	};
+
+	/* ADSP PAS (audio + sensors + battery services): mainline binding on
+	 * the stock node.  The vendor cx/mx arc-regulator supplies and the
+	 * downstream interconnect phandle-args are deleted — the mainline
+	 * driver uses rpmhpd power domains and never touches either, and the
+	 * stale entries only risk fw_devlink fake suppliers. */
+	fragment@220 {
+		target = <&adsp_pas>;
+		__overlay__ {
+			compatible = "qcom,sm8750-adsp-pas", "qcom,sm8550-adsp-pas";
+			firmware-name = "qcom/sm8750/adsp.mbn", "qcom/sm8750/adsp_dtb.mbn";
+			clocks = <&rpmhcc_ml RPMH_CXO_CLK>;
+			clock-names = "xo";
+			power-domains = <&rpmhpd_ml RPMHPD_LCX>, <&rpmhpd_ml RPMHPD_LMX>;
+			power-domain-names = "lcx", "lmx";
+			cx-supply;
+			mx-supply;
+			cx-uV-uA;
+			mx-uV-uA;
+			reg-names;
+			interconnects;
+			interconnect-names;
+			status = "okay";
+		};
+	};
+
+	/* ADSP glink services for audioreach (gpr -> q6apm/q6prm) */
+	fragment@221 {
+		target-path = "/soc/remoteproc-adsp@03000000/glink-edge";
+		__overlay__ {
+			gpr {
+				compatible = "qcom,gpr";
+				qcom,glink-channels = "adsp_apps";
+				qcom,domain = <GPR_DOMAIN_ID_ADSP>;
+				qcom,intents = <512 20>;
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				q6apm_ml: service@1 {
+					compatible = "qcom,q6apm";
+					reg = <GPR_APM_MODULE_IID>;
+					#sound-dai-cells = <0>;
+					qcom,protection-domain = "avs/audio",
+								 "msm/adsp/audio_pd";
+
+					q6apmbedai_ml: bedais {
+						compatible = "qcom,q6apm-lpass-dais";
+						#sound-dai-cells = <1>;
+					};
+
+					q6apmdai_ml: dais {
+						compatible = "qcom,q6apm-dais";
+						iommus = <&apps_smmu 0x1001 0x80>,
+							 <&apps_smmu 0x1041 0x20>;
+					};
+				};
+
+				q6prm_ml: service@2 {
+					compatible = "qcom,q6prm";
+					reg = <GPR_PRM_MODULE_IID>;
+					qcom,protection-domain = "avs/audio",
+								 "msm/adsp/audio_pd";
+
+					q6prmcc_ml: clock-controller {
+						compatible = "qcom,q6prm-lpass-clocks";
+						#clock-cells = <2>;
+					};
+				};
+			};
+		};
+	};
+
+	/* CDSP PAS: same treatment (remote-pid 5 glink already on the node) */
+	fragment@222 {
+		target = <&cdsp_pas>;
+		__overlay__ {
+			compatible = "qcom,sm8750-cdsp-pas", "qcom,sm8650-cdsp-pas";
+			firmware-name = "qcom/sm8750/cdsp.mbn", "qcom/sm8750/cdsp_dtb.mbn";
+			clocks = <&rpmhcc_ml RPMH_CXO_CLK>;
+			clock-names = "xo";
+			power-domains = <&rpmhpd_ml RPMHPD_CX>, <&rpmhpd_ml RPMHPD_MXC>,
+					<&rpmhpd_ml RPMHPD_NSP>;
+			power-domain-names = "cx", "mxc", "nsp";
+			cx-supply;
+			mx-supply;
+			nsp-supply;
+			cx-uV-uA;
+			mx-uV-uA;
+			nsp-uV-uA;
+			reg-names;
+			interconnects;
+			interconnect-names;
+			status = "okay";
+		};
+	};
+
+	/* pmic-glink: mainline compatible chain on the stock node — the
+	 * core spawns the ucsi/altmode/battmgr clients itself.  The ucsi
+	 * connector stays disabled (fragment@216 above): USB role control is
+	 * not allowed to touch the NCM debug path until proven elsewhere. */
+	fragment@223 {
+		target-path = "/soc/qcom,pmic_glink";
+		__overlay__ {
+			compatible = "qcom,sm8750-pmic-glink",
+				     "qcom,sm8550-pmic-glink",
+				     "qcom,pmic-glink";
+		};
+	};
+
+	/* WCN7850 ("peach") WLAN/BT combo PMU — cloned from the in-tree
+	 * sm8750-mtp reference; rails cross-checked against the stock dtbo
+	 * (aon=S4D, dig=S5F, rfa1=S3G 1.8, rfa2=S7I 1.25, io=L3F, io12=L2F) */
+	fragment@224 {
+		target-path = "/";
+		__overlay__ {
+			wcn7850_pmu_ml: wcn7850-pmu {
+				compatible = "qcom,wcn7850-pmu";
+
+				pinctrl-names = "default";
+				pinctrl-0 = <&wlan_en_ml>, <&bt_default_ml>;
+
+				wlan-enable-gpios = <&tlmm 16 GPIO_ACTIVE_HIGH>;
+				bt-enable-gpios = <&pm8550ve_f_gpios 3 GPIO_ACTIVE_HIGH>;
+
+				vdd-supply = <&S5F>;
+				vddio-supply = <&L3F>;
+				vddio1p2-supply = <&L2F>;
+				vddaon-supply = <&S4D>;
+				vdddig-supply = <&S5F>;
+				vddrfa1p2-supply = <&S7I>;
+				vddrfa1p8-supply = <&S3G>;
+
+				clocks = <&rpmhcc_ml RPMH_RF_CLK1>;
+
+				regulators {
+					vreg_pmu_rfa_cmn_ml: ldo0 {
+						regulator-name = "vreg_pmu_rfa_cmn";
+					};
+
+					vreg_pmu_aon_0p59_ml: ldo1 {
+						regulator-name = "vreg_pmu_aon_0p59";
+					};
+
+					vreg_pmu_wlcx_0p8_ml: ldo2 {
+						regulator-name = "vreg_pmu_wlcx_0p8";
+					};
+
+					vreg_pmu_wlmx_0p85_ml: ldo3 {
+						regulator-name = "vreg_pmu_wlmx_0p85";
+					};
+
+					vreg_pmu_btcmx_0p85_ml: ldo4 {
+						regulator-name = "vreg_pmu_btcmx_0p85";
+					};
+
+					vreg_pmu_rfa_0p8_ml: ldo5 {
+						regulator-name = "vreg_pmu_rfa_0p8";
+					};
+
+					vreg_pmu_rfa_1p2_ml: ldo6 {
+						regulator-name = "vreg_pmu_rfa_1p2";
+					};
+
+					vreg_pmu_rfa_1p8_ml: ldo7 {
+						regulator-name = "vreg_pmu_rfa_1p8";
+					};
+
+					vreg_pmu_pcie_0p9_ml: ldo8 {
+						regulator-name = "vreg_pmu_pcie_0p9";
+					};
+
+					vreg_pmu_pcie_1p8_ml: ldo9 {
+						regulator-name = "vreg_pmu_pcie_1p8";
+					};
+				};
+			};
+		};
+	};
+
+	/* board pinctrl for WLAN/BT/audio/touch/uart14 */
+	fragment@225 {
+		target = <&tlmm>;
+		__overlay__ {
+			wlan_en_ml: wlan-en-state {
+				pins = "gpio16";
+				function = "gpio";
+				drive-strength = <8>;
+				bias-pull-down;
+			};
+
+			bt_default_ml: bt-default-state {
+				sw-ctrl-pins {
+					pins = "gpio18";
+					function = "gpio";
+					bias-pull-down;
+				};
+			};
+
+			ts_cs_suspend_ml: ts-cs-suspend-state {
+				pins = "gpio43";
+				function = "gpio";
+				drive-strength = <2>;
+				bias-pull-down;
+				output-low;
+			};
+
+			wcd_reset_ml: wcd939x-reset-n-active-state {
+				pins = "gpio101";
+				function = "gpio";
+				drive-strength = <16>;
+				bias-disable;
+				output-low;
+			};
+
+			spkr_0_sd_n_ml: spkr-0-sd-n-active-state {
+				pins = "gpio76";
+				function = "gpio";
+				drive-strength = <16>;
+				bias-disable;
+				output-low;
+			};
+
+			spkr_1_sd_n_ml: spkr-1-sd-n-active-state {
+				pins = "gpio77";
+				function = "gpio";
+				drive-strength = <16>;
+				bias-disable;
+				output-low;
+			};
+
+			qup_uart14_default_ml: qup-uart14-default-state {
+				/* TX, RX */
+				pins = "gpio26", "gpio27";
+				function = "qup2_se6";
+				drive-strength = <2>;
+				bias-pull-up;
+			};
+
+			qup_uart14_cts_rts_ml: qup-uart14-cts-rts-state {
+				/* CTS, RTS */
+				pins = "gpio24", "gpio25";
+				function = "qup2_se6";
+				drive-strength = <2>;
+				bias-pull-down;
+			};
+
+			ts_irq_default_ml: ts-irq-default-state {
+				pins = "gpio162";
+				function = "gpio";
+				drive-strength = <2>;
+				bias-pull-down;
+				input-enable;
+			};
+
+
+		};
+	};
+
+	/* BT HCI UART: SE14 4-wire with the hci_qca serdev child; the
+	 * pwrseq-qcom-wcn unit (wcn7850-pmu above) powers the controller
+	 * before firmware download (qca/hmtbtfw20.tlv + hmtnv20*) */
+	fragment@226 {
+		target-path = "/soc/qcom,qupv3_2_geni_se@8c0000/qcom,qup_uart@898000";
+		__overlay__ {
+			compatible = "qcom,geni-uart";
+			status = "okay";
+			current-speed = <115200>;
+
+			pinctrl-names = "default";
+			pinctrl-0 = <&qup_uart14_default_ml>, <&qup_uart14_cts_rts_ml>;
+
+			bluetooth {
+				compatible = "qcom,wcn7850-bt";
+
+				vddrfacmn-supply = <&vreg_pmu_rfa_cmn_ml>;
+				vddaon-supply = <&vreg_pmu_aon_0p59_ml>;
+				vddwlcx-supply = <&vreg_pmu_wlcx_0p8_ml>;
+				vddwlmx-supply = <&vreg_pmu_wlmx_0p85_ml>;
+				vddrfa0p8-supply = <&vreg_pmu_rfa_0p8_ml>;
+				vddrfa1p2-supply = <&vreg_pmu_rfa_1p2_ml>;
+				vddrfa1p8-supply = <&vreg_pmu_rfa_1p8_ml>;
+
+				max-speed = <3200000>;
+			};
+		};
+	};
+
+	/* NT36532E SPI touch on SE2, CSOT panel family (display runs on the
+	 * ABL simple-framebuffer; the panel family follows the stock dtbo
+	 * CSOT primary, OQ#15/#18) */
+	fragment@227 {
+		target = <&qupv3_se2_spi>;
+		__overlay__ {
+			compatible = "qcom,geni-spi";
+			status = "okay";
+
+			pinctrl-names = "default", "sleep";
+			pinctrl-0 = <&qupv3_se2_spi_pins>;
+			pinctrl-1 = <&qupv3_se2_spi_sleep>;
+
+			touchscreen@0 {
+				compatible = "novatek,NVT-ts-spi";
+				reg = <0>;
+				status = "okay";
+
+				spi-max-frequency = <19200000>;
+
+				novatek,irq-gpios = <&tlmm 162 GPIO_ACTIVE_HIGH>;
+				novatek,lcd-id-gpios = <&tlmm 100 GPIO_ACTIVE_HIGH>;
+
+				pinctrl-names = "pmx_ts_active", "pmx_ts_suspend";
+				pinctrl-0 = <&ts_irq_default_ml>;
+				pinctrl-1 = <&ts_cs_suspend_ml>;
+
+				firmware-name = "novatek/novatek_nt36532_piano_fw_csot.bin";
+			};
+		};
+	};
+
+	/* audio: retire the entire downstream spf_core_platform subtree */
+	fragment@240 {
+		target = <&spf_core_platform>;
+		__overlay__ {
+			status = "disabled";
+		};
+	};
+
+	/* LPASS LPI pinctrl: mainline binding + clocks from q6prm */
+	fragment@241 {
+		target = <&lpi_tlmm>;
+		__overlay__ {
+			compatible = "qcom,sm8750-lpass-lpi-pinctrl",
+				     "qcom,sm8650-lpass-lpi-pinctrl";
+
+			clocks = <&q6prmcc_ml LPASS_HW_MACRO_VOTE LPASS_CLK_ATTRIBUTE_COUPLE_NO>,
+				 <&q6prmcc_ml LPASS_HW_DCODEC_VOTE LPASS_CLK_ATTRIBUTE_COUPLE_NO>;
+			clock-names = "core", "audio";
+
+			tx_swr_active_ml: tx-swr-active-state {
+				clk-pins {
+					pins = "gpio0";
+					function = "swr_tx_clk";
+					drive-strength = <2>;
+					slew-rate = <1>;
+					bias-disable;
+				};
+
+				data-pins {
+					pins = "gpio1", "gpio2", "gpio14";
+					function = "swr_tx_data";
+					drive-strength = <2>;
+					slew-rate = <1>;
+					bias-bus-hold;
+				};
+			};
+
+			rx_swr_active_ml: rx-swr-active-state {
+				clk-pins {
+					pins = "gpio3";
+					function = "swr_rx_clk";
+					drive-strength = <2>;
+					slew-rate = <1>;
+					bias-disable;
+				};
+
+				data-pins {
+					pins = "gpio4", "gpio5";
+					function = "swr_rx_data";
+					drive-strength = <2>;
+					slew-rate = <1>;
+					bias-bus-hold;
+				};
+			};
+
+			wsa_swr_active_ml: wsa-swr-active-state {
+				clk-pins {
+					pins = "gpio10";
+					function = "wsa_swr_clk";
+					drive-strength = <2>;
+					slew-rate = <1>;
+					bias-disable;
+				};
+
+				data-pins {
+					pins = "gpio11";
+					function = "wsa_swr_data";
+					drive-strength = <2>;
+					slew-rate = <1>;
+					bias-bus-hold;
+				};
+			};
+
+			wsa2_swr_active_ml: wsa2-swr-active-state {
+				clk-pins {
+					pins = "gpio15";
+					function = "wsa2_swr_clk";
+					drive-strength = <2>;
+					slew-rate = <1>;
+					bias-disable;
+				};
+
+				data-pins {
+					pins = "gpio16";
+					function = "wsa2_swr_data";
+					drive-strength = <2>;
+					slew-rate = <1>;
+					bias-bus-hold;
+				};
+			};
+		};
+	};
+
+	/* audioreach hardware: the five lpass macros + four soundwire
+	 * controllers, upstream sm8750.dtsi content with 1-cell /soc regs */
+	fragment@242 {
+		target = <&soc>;
+		__overlay__ {
+
+			lpass_wsa2macro_ml: codec@6aa0000 {
+				compatible = "qcom,sm8750-lpass-wsa-macro", "qcom,sm8550-lpass-wsa-macro";
+				reg = <0x6aa0000 0x1000>;
+				clocks = <&q6prmcc_ml LPASS_CLK_ID_WSA2_CORE_TX_MCLK LPASS_CLK_ATTRIBUTE_COUPLE_NO>,
+					 <&q6prmcc_ml LPASS_HW_MACRO_VOTE LPASS_CLK_ATTRIBUTE_COUPLE_NO>,
+					 <&q6prmcc_ml LPASS_HW_DCODEC_VOTE LPASS_CLK_ATTRIBUTE_COUPLE_NO>,
+					 <&lpass_vamacro_ml>;
+				clock-names = "mclk", "macro", "dcodec", "fsgen";
+
+				#clock-cells = <0>;
+				clock-output-names = "wsa2-mclk";
+				#sound-dai-cells = <1>;
+			};
+
+			swr3_ml: soundwire@6ab0000 {
+				compatible = "qcom,soundwire-v2.1.0", "qcom,soundwire-v2.0.0";
+				reg = <0x6ab0000 0x10000>;
+				interrupts = <0x00 0xab 0x04>;
+				clocks = <&lpass_wsa2macro_ml>;
+				clock-names = "iface";
+				label = "WSA2";
+
+				pinctrl-0 = <&wsa2_swr_active_ml>;
+				pinctrl-names = "default";
+
+				qcom,din-ports = <4>;
+				qcom,dout-ports = <9>;
+
+				qcom,ports-sinterval =		/bits/ 16 <0x07 0x1f 0x3f 0x07 0x1f 0x3f 0x18f 0x18f 0x18f 0x0f 0x0f 0xff 0x31f>;
+				qcom,ports-offset1 =		/bits/ 8 <0x01 0x03 0x05 0x02 0x04 0x15 0x00 0x00 0x00 0x06 0x0d 0xff 0x00>;
+				qcom,ports-offset2 =		/bits/ 8 <0xff 0x07 0x1f 0xff 0x07 0x1f 0xff 0xff 0xff 0xff 0xff 0xff 0xff>;
+				qcom,ports-hstart =		/bits/ 8 <0xff 0xff 0xff 0xff 0xff 0xff 0x08 0x0e 0x0e 0xff 0xff 0xff 0x0f>;
+				qcom,ports-hstop =		/bits/ 8 <0xff 0xff 0xff 0xff 0xff 0xff 0x08 0x0e 0x0e 0xff 0xff 0xff 0x0f>;
+				qcom,ports-word-length =	/bits/ 8 <0xff 0xff 0xff 0xff 0xff 0xff 0x08 0x0f 0x0f 0x00 0xff 0xff 0x18>;
+				qcom,ports-block-pack-mode =	/bits/ 8 <0x00 0x01 0x01 0x00 0x01 0x01 0x00 0x01 0x01 0x01 0x01 0x00 0x00>;
+				qcom,ports-block-group-count =	/bits/ 8 <0xff 0xff 0xff 0xff 0xff 0xff 0xff 0x00 0x00 0xff 0xff 0xff 0xff>;
+				qcom,ports-lane-control =	/bits/ 8 <0xff 0xff 0xff 0xff 0xff 0xff 0xff 0x00 0x00 0xff 0xff 0xff 0xff>;
+
+				#address-cells = <2>;
+				#size-cells = <0>;
+				#sound-dai-cells = <1>;
+				status = "okay";
+			};
+
+			lpass_rxmacro_ml: codec@6ac0000 {
+				compatible = "qcom,sm8750-lpass-rx-macro", "qcom,sm8550-lpass-rx-macro";
+				reg = <0x6ac0000 0x1000>;
+				clocks = <&q6prmcc_ml LPASS_CLK_ID_RX_CORE_TX_MCLK LPASS_CLK_ATTRIBUTE_COUPLE_NO>,
+					 <&q6prmcc_ml LPASS_HW_MACRO_VOTE LPASS_CLK_ATTRIBUTE_COUPLE_NO>,
+					 <&q6prmcc_ml LPASS_HW_DCODEC_VOTE LPASS_CLK_ATTRIBUTE_COUPLE_NO>,
+					 <&lpass_vamacro_ml>;
+				clock-names = "mclk", "macro", "dcodec", "fsgen";
+
+				#clock-cells = <0>;
+				clock-output-names = "mclk";
+				#sound-dai-cells = <1>;
+			};
+
+			swr1_ml: soundwire@6ad0000 {
+				compatible = "qcom,soundwire-v2.1.0", "qcom,soundwire-v2.0.0";
+				reg = <0x6ad0000 0x10000>;
+				interrupts = <0x00 0x9b 0x04>;
+				clocks = <&lpass_rxmacro_ml>;
+				clock-names = "iface";
+				label = "RX";
+
+				pinctrl-0 = <&rx_swr_active_ml>;
+				pinctrl-names = "default";
+
+				qcom,din-ports = <1>;
+				qcom,dout-ports = <11>;
+
+				qcom,ports-sinterval =		/bits/ 16 <0x03 0x3f 0x1f 0x07 0x00 0x18f 0xff 0xff 0x31 0xff 0xff 0xff>;
+				qcom,ports-offset1 =		/bits/ 8 <0x00 0x00 0x0b 0x01 0x00 0x00 0xff 0xff 0x00 0xff 0xff 0xff>;
+				qcom,ports-offset2 =		/bits/ 8 <0x00 0x00 0x0b 0x00 0x00 0x00 0xff 0xff 0x00 0xff 0xff 0xff>;
+				qcom,ports-hstart =		/bits/ 8 <0xff 0x03 0xff 0xff 0xff 0x08 0xff 0xff 0x00 0xff 0xff 0xff>;
+				qcom,ports-hstop =		/bits/ 8 <0xff 0x06 0xff 0xff 0xff 0x08 0xff 0xff 0x0f 0xff 0xff 0xff>;
+				qcom,ports-word-length =	/bits/ 8 <0x01 0x07 0x04 0xff 0xff 0x0f 0xff 0xff 0x18 0xff 0xff 0xff>;
+				qcom,ports-block-pack-mode =	/bits/ 8 <0xff 0x00 0x01 0xff 0xff 0x00 0xff 0xff 0x01 0xff 0xff 0xff>;
+				qcom,ports-block-group-count =	/bits/ 8 <0xff 0xff 0xff 0xff 0x00 0x00 0xff 0xff 0x00 0xff 0xff 0xff>;
+				qcom,ports-lane-control =	/bits/ 8 <0x01 0x00 0x00 0x00 0x00 0x00 0xff 0xff 0x01 0xff 0xff 0xff>;
+
+				#address-cells = <2>;
+				#size-cells = <0>;
+				#sound-dai-cells = <1>;
+				status = "okay";
+
+				wcd_rx_ml: codec@0,4 {
+					compatible = "sdw20217010e00";
+					reg = <0 4>;
+					qcom,rx-port-mapping = <1 2 3 4 5 9>;
+				};
+			};
+
+			lpass_txmacro_ml: codec@6ae0000 {
+				compatible = "qcom,sm8750-lpass-tx-macro", "qcom,sm8550-lpass-tx-macro";
+				reg = <0x6ae0000 0x1000>;
+				clocks = <&q6prmcc_ml LPASS_CLK_ID_TX_CORE_MCLK LPASS_CLK_ATTRIBUTE_COUPLE_NO>,
+					 <&q6prmcc_ml LPASS_HW_MACRO_VOTE LPASS_CLK_ATTRIBUTE_COUPLE_NO>,
+					 <&q6prmcc_ml LPASS_HW_DCODEC_VOTE LPASS_CLK_ATTRIBUTE_COUPLE_NO>,
+					 <&lpass_vamacro_ml>;
+				clock-names = "mclk", "macro", "dcodec", "fsgen";
+
+				#clock-cells = <0>;
+				clock-output-names = "mclk";
+				#sound-dai-cells = <1>;
+			};
+
+			lpass_wsamacro_ml: codec@6b00000 {
+				compatible = "qcom,sm8750-lpass-wsa-macro", "qcom,sm8550-lpass-wsa-macro";
+				reg = <0x6b00000 0x1000>;
+				clocks = <&q6prmcc_ml LPASS_CLK_ID_WSA_CORE_TX_MCLK LPASS_CLK_ATTRIBUTE_COUPLE_NO>,
+					 <&q6prmcc_ml LPASS_HW_MACRO_VOTE LPASS_CLK_ATTRIBUTE_COUPLE_NO>,
+					 <&q6prmcc_ml LPASS_HW_DCODEC_VOTE LPASS_CLK_ATTRIBUTE_COUPLE_NO>,
+					 <&lpass_vamacro_ml>;
+				clock-names = "mclk", "macro", "dcodec", "fsgen";
+
+				#clock-cells = <0>;
+				clock-output-names = "mclk";
+				#sound-dai-cells = <1>;
+			};
+
+			swr0_ml: soundwire@6b10000 {
+				compatible = "qcom,soundwire-v2.1.0", "qcom,soundwire-v2.0.0";
+				reg = <0x6b10000 0x10000>;
+				interrupts = <0x00 0xaa 0x04>;
+				clocks = <&lpass_wsamacro_ml>;
+				clock-names = "iface";
+				label = "WSA";
+
+				pinctrl-0 = <&wsa_swr_active_ml>;
+				pinctrl-names = "default";
+
+				qcom,din-ports = <4>;
+				qcom,dout-ports = <9>;
+
+				qcom,ports-sinterval =		/bits/ 16 <0x07 0x1f 0x3f 0x07 0x1f 0x3f 0x18f 0x18f 0x18f 0x0f 0x0f 0xff 0x31f>;
+				qcom,ports-offset1 =		/bits/ 8 <0x01 0x03 0x05 0x02 0x04 0x15 0x00 0x00 0x00 0x06 0x0d 0xff 0x00>;
+				qcom,ports-offset2 =		/bits/ 8 <0xff 0x07 0x1f 0xff 0x07 0x1f 0xff 0xff 0xff 0xff 0xff 0xff 0xff>;
+				qcom,ports-hstart =		/bits/ 8 <0xff 0xff 0xff 0xff 0xff 0xff 0x08 0x0e 0x0e 0xff 0xff 0xff 0x0f>;
+				qcom,ports-hstop =		/bits/ 8 <0xff 0xff 0xff 0xff 0xff 0xff 0x08 0x0e 0x0e 0xff 0xff 0xff 0x0f>;
+				qcom,ports-word-length =	/bits/ 8 <0xff 0xff 0xff 0xff 0xff 0xff 0x08 0x0f 0x0f 0x00 0xff 0xff 0x18>;
+				qcom,ports-block-pack-mode =	/bits/ 8 <0x00 0x01 0x01 0x00 0x01 0x01 0x00 0x01 0x01 0x01 0x01 0x00 0x00>;
+				qcom,ports-block-group-count =	/bits/ 8 <0xff 0xff 0xff 0xff 0xff 0xff 0xff 0x00 0x00 0xff 0xff 0xff 0xff>;
+				qcom,ports-lane-control =	/bits/ 8 <0xff 0xff 0xff 0xff 0xff 0xff 0xff 0x00 0x00 0xff 0xff 0xff 0xff>;
+
+				#address-cells = <2>;
+				#size-cells = <0>;
+				#sound-dai-cells = <1>;
+				status = "okay";
+
+				spkr_fl_ml: speaker@0,1 {
+					compatible = "sdw20217020400";
+					reg = <0 1>;
+					reset-gpios = <&tlmm 76 GPIO_ACTIVE_LOW>;
+					#sound-dai-cells = <0>;
+					sound-name-prefix = "SpkrFL";
+					vdd-1p8-supply = <&L15B>;
+					vdd-io-supply = <&L2I>;
+					qcom,port-mapping = <1 2 3 7 10 13>;
+				};
+
+				spkr_fr_ml: speaker@0,2 {
+					compatible = "sdw20217020400";
+					reg = <0 2>;
+					reset-gpios = <&tlmm 77 GPIO_ACTIVE_LOW>;
+					#sound-dai-cells = <0>;
+					sound-name-prefix = "SpkrFR";
+					vdd-1p8-supply = <&L15B>;
+					vdd-io-supply = <&L2I>;
+					qcom,port-mapping = <4 5 6 7 11 13>;
+				};
+			};
+
+			swr2_ml: soundwire@7630000 {
+				compatible = "qcom,soundwire-v2.1.0", "qcom,soundwire-v2.0.0";
+				reg = <0x7630000 0x10000>;
+				interrupts = <0x00 0x2f9 0x04>, <0x00 0x311 0x04>;
+				interrupt-names = "core", "wakeup";
+				clocks = <&lpass_txmacro_ml>;
+				clock-names = "iface";
+				label = "TX";
+
+				pinctrl-0 = <&tx_swr_active_ml>;
+				pinctrl-names = "default";
+
+				qcom,din-ports = <4>;
+				qcom,dout-ports = <0>;
+
+				qcom,ports-sinterval-low =	/bits/ 8 <0x01 0x01 0x03 0x03>;
+				qcom,ports-offset1 =		/bits/ 8 <0x00 0x00 0x01 0x01>;
+				qcom,ports-offset2 =		/bits/ 8 <0x00 0x00 0x00 0x00>;
+				qcom,ports-hstart =		/bits/ 8 <0xff 0xff 0xff 0xff>;
+				qcom,ports-hstop =		/bits/ 8 <0xff 0xff 0xff 0xff>;
+				qcom,ports-word-length =	/bits/ 8 <0xff 0xff 0xff 0xff>;
+				qcom,ports-block-pack-mode =	/bits/ 8 <0xff 0xff 0xff 0xff>;
+				qcom,ports-block-group-count =	/bits/ 8 <0xff 0xff 0xff 0xff>;
+				qcom,ports-lane-control =	/bits/ 8 <0x01 0x02 0x00 0x00>;
+
+				#address-cells = <2>;
+				#size-cells = <0>;
+				#sound-dai-cells = <1>;
+				status = "okay";
+
+				wcd_tx_ml: codec@0,3 {
+					compatible = "sdw20217010e00";
+					reg = <0 3>;
+					qcom,tx-port-mapping = <2 2 3 4>;
+				};
+			};
+
+			lpass_vamacro_ml: codec@7660000 {
+				compatible = "qcom,sm8750-lpass-va-macro", "qcom,sm8550-lpass-va-macro";
+				reg = <0x7660000 0x2000>;
+				clocks = <&q6prmcc_ml LPASS_CLK_ID_TX_CORE_MCLK LPASS_CLK_ATTRIBUTE_COUPLE_NO>,
+					 <&q6prmcc_ml LPASS_HW_MACRO_VOTE LPASS_CLK_ATTRIBUTE_COUPLE_NO>,
+					 <&q6prmcc_ml LPASS_HW_DCODEC_VOTE LPASS_CLK_ATTRIBUTE_COUPLE_NO>;
+				clock-names = "mclk", "macro", "dcodec";
+
+				vdd-micb-supply = <&L1B>;
+				qcom,dmic-sample-rate = <4800000>;
+
+				#clock-cells = <0>;
+				clock-output-names = "fsgen";
+				#sound-dai-cells = <1>;
+			};
+		};
+	};
+
+	/* WCD9395 codec + audioreach sound card (MTP link set with the
+	 * quad-speaker wsa-dai-link pattern from x1e80100-yoga-slim7x) */
+	fragment@243 {
+		target-path = "/";
+		__overlay__ {
+
+			wcd939x_ml: audio-codec-ml {
+				compatible = "qcom,wcd9395-codec", "qcom,wcd9390-codec";
+
+				pinctrl-0 = <&wcd_reset_ml>;
+				pinctrl-names = "default";
+
+				qcom,micbias1-microvolt = <1800000>;
+				qcom,micbias2-microvolt = <1800000>;
+				qcom,micbias3-microvolt = <1800000>;
+				qcom,micbias4-microvolt = <1800000>;
+				qcom,mbhc-buttons-vthreshold-microvolt = <75000 150000 237000 500000 500000 500000 500000 500000>;
+				qcom,mbhc-headset-vthreshold-microvolt = <1700000>;
+				qcom,mbhc-headphone-vthreshold-microvolt = <50000>;
+				qcom,rx-device = <&wcd_rx_ml>;
+				qcom,tx-device = <&wcd_tx_ml>;
+
+				reset-gpios = <&tlmm 101 GPIO_ACTIVE_LOW>;
+
+				vdd-buck-supply = <&L15B>;
+				vdd-rxtx-supply = <&L15B>;
+				vdd-io-supply = <&L15B>;
+				vdd-mic-bias-supply = <&BOB1>;
+				vdd-px-supply = <&L2I>;
+
+				#sound-dai-cells = <1>;
+
+				mode-switch;
+				orientation-switch;
+			};
+
+			sound_ml: sound-ml {
+				compatible = "qcom,sm8750-sndcard", "qcom,sm8450-sndcard";
+				model = "Xiaomi Pad 8 Pro";
+
+				audio-routing = "SpkrFL IN", "WSA WSA_SPK1 OUT",
+						"SpkrFR IN", "WSA WSA_SPK2 OUT",
+						"SpkrRL IN", "WSA2 WSA_SPK1 OUT",
+						"SpkrRR IN", "WSA2 WSA_SPK2 OUT",
+						"IN1_HPHL", "HPHL_OUT",
+						"IN2_HPHR", "HPHR_OUT",
+						"AMIC2", "MIC BIAS2",
+						"VA DMIC0", "MIC BIAS3",
+						"VA DMIC1", "MIC BIAS3",
+						"VA DMIC2", "MIC BIAS1",
+						"VA DMIC3", "MIC BIAS1",
+						"VA DMIC0", "VA MIC BIAS3",
+						"VA DMIC1", "VA MIC BIAS3",
+						"VA DMIC2", "VA MIC BIAS1",
+						"VA DMIC3", "VA MIC BIAS1",
+						"TX SWR_INPUT1", "ADC2_OUTPUT";
+
+				wcd-playback-dai-link {
+					link-name = "WCD Playback";
+
+					codec {
+						sound-dai = <&wcd939x_ml 0>, <&swr1_ml 0>, <&lpass_rxmacro_ml 0>;
+					};
+
+					cpu {
+						sound-dai = <&q6apmbedai_ml RX_CODEC_DMA_RX_0>;
+					};
+
+					platform {
+						sound-dai = <&q6apm_ml>;
+					};
+				};
+
+				wcd-capture-dai-link {
+					link-name = "WCD Capture";
+
+					codec {
+						sound-dai = <&wcd939x_ml 1>, <&swr2_ml 0>, <&lpass_txmacro_ml 0>;
+					};
+
+					cpu {
+						sound-dai = <&q6apmbedai_ml TX_CODEC_DMA_TX_3>;
+					};
+
+					platform {
+						sound-dai = <&q6apm_ml>;
+					};
+				};
+
+				wsa-dai-link {
+					link-name = "WSA Playback";
+
+					codec {
+						sound-dai = <&spkr_fl_ml>, <&spkr_fr_ml>,
+							    <&swr0_ml 0>, <&lpass_wsamacro_ml 0>,
+							    <&spkr_rl_ml>, <&spkr_rr_ml>,
+							    <&swr3_ml 0>, <&lpass_wsa2macro_ml 0>;
+					};
+
+					cpu {
+						sound-dai = <&q6apmbedai_ml WSA_CODEC_DMA_RX_0>;
+					};
+
+					platform {
+						sound-dai = <&q6apm_ml>;
+					};
+				};
+
+				va-dai-link {
+					link-name = "VA Capture";
+
+					codec {
+						sound-dai = <&lpass_vamacro_ml 0>;
+					};
+
+					cpu {
+						sound-dai = <&q6apmbedai_ml VA_CODEC_DMA_TX_0>;
+					};
+
+					platform {
+						sound-dai = <&q6apm_ml>;
+					};
+				};
+			};
+
+
+		};
+	};
+
+	/* spkr_rl/spkr_rr live on swr3 (second WSA bus) */
+	fragment@244 {
+		target = <&swr3_ml>;
+		__overlay__ {
+			spkr_rl_ml: speaker@0,1 {
+				compatible = "sdw20217020400";
+				reg = <0 1>;
+				reset-gpios = <&tlmm 76 GPIO_ACTIVE_LOW>;
+				#sound-dai-cells = <0>;
+				sound-name-prefix = "SpkrRL";
+				vdd-1p8-supply = <&L15B>;
+				vdd-io-supply = <&L2I>;
+				qcom,port-mapping = <1 2 3 7 10 13>;
+			};
+
+			spkr_rr_ml: speaker@0,2 {
+				compatible = "sdw20217020400";
+				reg = <0 2>;
+				reset-gpios = <&tlmm 77 GPIO_ACTIVE_LOW>;
+				#sound-dai-cells = <0>;
+				sound-name-prefix = "SpkrRR";
+				vdd-1p8-supply = <&L15B>;
+				vdd-io-supply = <&L2I>;
+				qcom,port-mapping = <4 5 6 7 11 13>;
+			};
+		};
+	};
+
+	/* WLAN: peach on PCIe0 — loaded LAST from the initramfs (pcie-qcom
+	 * is =m for exactly this reason).  The vendor msi-map / iommu-map /
+	 * ranges phandle values stay; reg/interrupts move to the mainline
+	 * layout.  interconnects are dropped: pcie-anoc has no vendor node
+	 * and bandwidth voting is not functional for bring-up. */
+	fragment@250 {
+		target = <&pcie0>;
+		__overlay__ {
+			compatible = "qcom,pcie-sm8750", "qcom,pcie-sm8550";
+
+			reg = <0x1c00000 0x3000>,
+			      <0x40000000 0xf1d>,
+			      <0x40000f20 0xa8>,
+			      <0x40001000 0x1000>,
+			      <0x40100000 0x100000>,
+			      <0x1c03000 0x1000>;
+			reg-names = "parf", "dbi", "elbi", "atu", "config", "mhi";
+
+			bus-range = <0x00 0xff>;
+			num-lanes = <2>;
+
+			interrupts = <0x00 0x8c 0x04>,
+				     <0x00 0x8d 0x04>,
+				     <0x00 0x8e 0x04>,
+				     <0x00 0x8f 0x04>,
+				     <0x00 0x90 0x04>,
+				     <0x00 0x91 0x04>,
+				     <0x00 0x92 0x04>,
+				     <0x00 0x93 0x04>,
+				     <0x00 0x94 0x04>;
+			interrupt-names = "msi0", "msi1", "msi2", "msi3",
+					  "msi4", "msi5", "msi6", "msi7",
+					  "global";
+
+			#interrupt-cells = <1>;
+			interrupt-map-mask = <0 0 0 0x7>;
+			interrupt-map = <0 0 0 1 &intc 0 0 GIC_SPI 149 IRQ_TYPE_LEVEL_HIGH>,
+					<0 0 0 2 &intc 0 0 GIC_SPI 150 IRQ_TYPE_LEVEL_HIGH>,
+					<0 0 0 3 &intc 0 0 GIC_SPI 151 IRQ_TYPE_LEVEL_HIGH>,
+					<0 0 0 4 &intc 0 0 GIC_SPI 152 IRQ_TYPE_LEVEL_HIGH>;
+
+			clocks = <&gcc GCC_PCIE_0_AUX_CLK>,
+				 <&gcc GCC_PCIE_0_CFG_AHB_CLK>,
+				 <&gcc GCC_PCIE_0_MSTR_AXI_CLK>,
+				 <&gcc GCC_PCIE_0_SLV_AXI_CLK>,
+				 <&gcc GCC_PCIE_0_SLV_Q2A_AXI_CLK>,
+				 <&gcc GCC_DDRSS_PCIE_SF_QTB_CLK>,
+				 <&gcc GCC_AGGRE_NOC_PCIE_AXI_CLK>,
+				 <&gcc GCC_CNOC_PCIE_SF_AXI_CLK>;
+			clock-names = "aux", "cfg", "bus_master", "bus_slave",
+				      "slave_q2a", "ddrss_sf_tbu", "noc_aggr",
+				      "cnoc_sf_axi";
+
+			resets = <&gcc GCC_PCIE_0_BCR>;
+			reset-names = "pci";
+
+			power-domains = <&gcc GCC_PCIE_0_GDSC>;
+
+			perst-gpios = <&tlmm 102 GPIO_ACTIVE_LOW>;
+			wake-gpios = <&tlmm 104 GPIO_ACTIVE_LOW>;
+
+			phys = <&pcie0_phy_ml>;
+			phy-names = "pciephy";
+
+			interconnects;
+			interconnect-names;
+			gdsc-phy-vdd-supply;
+			qcom,bw-scale;
+
+			status = "okay";
+		};
+	};
+
+	/* QMP gen3x2 PCIe phy for pcie0 */
+	fragment@251 {
+		target = <&soc>;
+		__overlay__ {
+			pcie0_phy_ml: phy@1c06000 {
+				compatible = "qcom,sm8750-qmp-gen3x2-pcie-phy";
+				reg = <0x1c06000 0x2000>;
+
+				clocks = <&gcc GCC_PCIE_0_AUX_CLK>,
+					 <&gcc GCC_PCIE_0_CFG_AHB_CLK>,
+					 <&tcsr TCSR_PCIE_0_CLKREF_EN>,
+					 <&gcc GCC_PCIE_0_PHY_RCHNG_CLK>,
+					 <&gcc GCC_PCIE_0_PIPE_CLK>;
+				clock-names = "aux", "cfg_ahb", "ref", "rchng",
+					      "pipe";
+
+				assigned-clocks = <&gcc GCC_PCIE_0_PHY_RCHNG_CLK>;
+				assigned-clock-rates = <100000000>;
+
+				resets = <&gcc GCC_PCIE_0_PHY_BCR>;
+				reset-names = "phy";
+
+				power-domains = <&gcc GCC_PCIE_0_PHY_GDSC>;
+
+				#clock-cells = <0>;
+				clock-output-names = "pcie0_pipe_clk";
+
+				#phy-cells = <0>;
+
+				status = "okay";
+			};
+		};
+	};
