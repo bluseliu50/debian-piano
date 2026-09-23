@@ -368,17 +368,25 @@
 				output-low;
 			};
 
-			qup_uart14_default_ml: qup-uart14-default-state {
+					qup1_se2_spi_default_ml: qup1-se2-spi-default-state {
+				/* MISO 40, MOSI 41, CLK 42, CS 43 */
+				pins = "gpio40", "gpio41", "gpio42", "gpio43";
+				function = "qup1_se2";
+				drive-strength = <6>;
+				bias-disable;
+			};
+
+		qup_uart14_default_ml: qup-uart14-default-state {
 				/* TX, RX */
-				pins = "gpio26", "gpio27";
+				pins = "gpio24", "gpio25";
 				function = "qup2_se6";
 				drive-strength = <2>;
-				bias-pull-up;
+				bias-disable;
 			};
 
 			qup_uart14_cts_rts_ml: qup-uart14-cts-rts-state {
 				/* CTS, RTS */
-				pins = "gpio24", "gpio25";
+				pins = "gpio26", "gpio27";
 				function = "qup2_se6";
 				drive-strength = <2>;
 				bias-pull-down;
@@ -444,9 +452,8 @@
 			clocks = <&gcc GCC_QUPV3_WRAP1_S2_CLK>;
 			clock-names = "se";
 
-			pinctrl-names = "default", "sleep";
-			pinctrl-0 = <&qupv3_se2_spi_pins>;
-			pinctrl-1 = <&qupv3_se2_spi_sleep>;
+			pinctrl-names = "default";
+			pinctrl-0 = <&qup1_se2_spi_default_ml>;
 
 			touchscreen@0 {
 				compatible = "novatek,NVT-ts-spi";
@@ -1064,6 +1071,16 @@
 	 * 8 MB at +0x1B00000, untouched by fb0, ABL and stock Android,
 	 * preserved across warm resets). Read it after a freeze with a
 	 * known-good dtbo: modprobe ramoops; cat /sys/fs/pstore/*.  */
+	/* pdc: align the compatible with upstream sm8750 (the vendor node's
+	 * bare "qcom,pdc" fallback matches too, but make the intent and the
+	 * match explicit — adsp's wdog IRQ is routed through the PDC) */
+	fragment@259 {
+		target = <&pdc>;
+		__overlay__ {
+			compatible = "qcom,sm8750-pdc", "qcom,pdc";
+		};
+	};
+
 	fragment@260 {
 		target-path = "/reserved-memory";
 		__overlay__ {
