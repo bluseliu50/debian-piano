@@ -206,13 +206,14 @@ stage_log() { echo "piano-stage: $*" > "$CON" 2>/dev/null; echo "piano-stage: $*
   modprobe pwrseq-qcom-wcn
   modprobe hci_uart
   modprobe btqca
-
-  # Stage E: WLAN, LAST on purpose — pcie is the least proven MMIO path.
-  # phy -> controller -> ath12k (peach 17cb:110e)
-  stage_log "E: pcie+ath12k (last)"
+  # Stage E: WLAN, LAST on purpose — pcie-qcom is built-in but its probe
+  # defers on this phy module (bool symbol, cannot be =m): loading
+  # phy-qcom-qmp-pcie is what starts the real PCIe bring-up, so the
+  # MMIO-heavy serdes programming still runs only now. ath12k follows
+  # (peach 17cb:110e).
+  stage_log "E: pcie phy + ath12k (last)"
   modprobe phy-qcom-qmp-pcie
-  modprobe pcie-qcom
-  sleep 3
+  sleep 5
   modprobe ath12k
   stage_log "all stages done"
 ) > /run/bringup-stages.log 2>&1 &
