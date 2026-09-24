@@ -162,17 +162,11 @@ busybox telnetd -p 23 -l /bin/sh && say "telnetd up on :23" || say "WARN telnetd
 
 say "debug environment up: NCM 10.42.0.2, ssh root@10.42.0.2"
 
-# --- ADSP-only bring-up (best effort, never fatal) ---------------------------
-# All other subsystem stages remain disabled for this trial. The driver is
-# loaded after NCM/telnet is available so a failed probe leaves a recovery
-# shell and a complete /run log.
-(
-  sleep 3
-  # qmi_handle_init() needs AF_QIPCRTR registered before PAS probes.
-  modprobe qrtr-smd
-  modprobe qcom_pd_mapper
-  modprobe qcom_q6v5_pas
-) >/run/stage-adsp.log 2>&1 &
+# Keep the display-safe image passive after NCM setup.  ADSP modules and
+# firmware remain staged for offline development, but no remoteproc, QRTR, or
+# RPMh client is loaded during boot.  This preserves the milestone-1 display
+# handoff while the ADSP power-domain wiring is being developed separately.
+say "ADSP trial disabled: display-safe boot"
 
 # Non-interactive boot smoke report in the background
 if command -v piano-tests >/dev/null 2>&1; then
