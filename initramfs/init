@@ -168,6 +168,7 @@ say "debug environment up: NCM 10.42.0.2, ssh root@10.42.0.2"
 # shell and a complete /run log.
 (
   sleep 3
+  modprobe qcom_pd_mapper
   modprobe qcom_q6v5_pas
 ) >/run/stage-adsp.log 2>&1 &
 
