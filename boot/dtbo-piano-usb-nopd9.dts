@@ -19546,6 +19546,24 @@
 		};
 	};
 
+	/* Keep the AMOLED IO rail voted before ADSP firmware starts. */
+	fragment@217 {
+		target-path = "/soc/rsc@16500000/drv@2";
+		__overlay__ {
+			panel_regulators: regulators-panel {
+				compatible = "qcom,pm8550-rpmh-regulators";
+				qcom,pmic-id = "b";
+
+				panel_l12b: ldo12 {
+					regulator-name = "vreg_l12b_1p9_panel";
+					regulator-min-microvolt = <1900000>;
+					regulator-max-microvolt = <1900000>;
+					regulator-always-on;
+				};
+			};
+		};
+	};
+
 	/* --- ADSP: bind the stock vendor node to the mainline PAS driver ----
 	 * The vendor node is qcom,sun-adsp-pas with cx/mx-supply phandles that
 	 * nothing in mainline binds.  Add the upstream compatible so the driver
@@ -19570,13 +19588,8 @@
 	fragment@221 {
 		target-path = "/soc/remoteproc-cdsp@32300000";
 		__overlay__ {
-			compatible = "qcom,sm8750-cdsp-pas", "qcom,sun-cdsp-pas";
-			power-domains = <&rpmhpd_ml RPMHPD_CX>,
-					<&rpmhpd_ml RPMHPD_MXC>,
-					<&rpmhpd_ml RPMHPD_NSP>;
-			power-domain-names = "cx", "mxc", "nsp";
-			firmware-name = "qcom/sm8750/cdsp.mdt", "qcom/sm8750/cdsp_dtb.mdt";
-			status = "okay";
+			/* CDSP is outside this first ADSP-only trial. */
+			status = "disabled";
 		};
 	};
 
