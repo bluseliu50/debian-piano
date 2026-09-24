@@ -19555,9 +19555,9 @@
 				qcom,pmic-id = "b";
 
 				panel_l12b: ldo12 {
-					regulator-name = "vreg_l12b_1p9_panel";
-					regulator-min-microvolt = <1900000>;
-					regulator-max-microvolt = <1900000>;
+					regulator-name = "vreg_l12b_1p8_panel";
+					regulator-min-microvolt = <1800000>;
+					regulator-max-microvolt = <1800000>;
 					regulator-always-on;
 				};
 			};
@@ -19580,6 +19580,7 @@
 					<&rpmhpd_ml RPMHPD_LMX>;
 			power-domain-names = "lcx", "lmx";
 			firmware-name = "qcom/sm8750/adsp.mdt", "qcom/sm8750/adsp_dtb.mdt";
+			qcom,no-auto-boot;
 			status = "okay";
 		};
 	};
