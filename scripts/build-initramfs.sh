@@ -161,7 +161,11 @@ install -m 0755 "$INIT_SRC" "$STAGING/beaconinit"
 install -m 0755 "$BUSYBOX_DIR/busybox" "$STAGING/bin/busybox"
 if [ -n "$DROPBEAR_TREE" ]; then
     cp -a "$DROPBEAR_TREE/usr" "$STAGING/"
-    cp -a "$DROPBEAR_TREE/lib" "$STAGING/"
+    # Some aarch64 tool trees provide /lib as a symlink into /usr/lib.
+    # Preserve a real /lib in the initramfs so kernel modules and firmware
+    # staged below it remain discoverable by the early userspace modprobe.
+    mkdir -p "$STAGING/lib"
+    cp -aL "$DROPBEAR_TREE/lib/." "$STAGING/lib/"
 else
     install -m 0755 "$DROPBEAR_DIR/dropbear"     "$STAGING/usr/sbin/dropbear"
     install -m 0755 "$DROPBEAR_DIR/dropbearkey"  "$STAGING/usr/bin/dropbearkey"
