@@ -19497,6 +19497,43 @@
 				#clock-cells = <1>;
 			};
 
+			/* rpmhpd must be a CHILD of apps_rsc: rpmh_write_batch()
+			 * resolves its controller via get_rpmh_ctrlr() ->
+			 * dev_get_drvdata(dev->parent).  Without this node every
+			 * power-domains consumer (adsp, cdsp, kgsl, ufs) defers
+			 * forever.  OPP table mirrored from upstream sm8750.dtsi.
+			 */
+			rpmhpd_ml: power-controller-ml {
+				compatible = "qcom,sm8750-rpmhpd";
+				operating-points-v2 = <&rpmhpd_opp_table_ml>;
+				#power-domain-cells = <1>;
+
+				rpmhpd_opp_table_ml: opp-table {
+					compatible = "operating-points-v2";
+
+					opp-16  { opp-level = <RPMH_REGULATOR_LEVEL_RETENTION>; };
+					opp-48  { opp-level = <RPMH_REGULATOR_LEVEL_MIN_SVS>; };
+					opp-50  { opp-level = <RPMH_REGULATOR_LEVEL_LOW_SVS_D3>; };
+					opp-52  { opp-level = <RPMH_REGULATOR_LEVEL_LOW_SVS_D2>; };
+					opp-56  { opp-level = <RPMH_REGULATOR_LEVEL_LOW_SVS_D1>; };
+					opp-60  { opp-level = <RPMH_REGULATOR_LEVEL_LOW_SVS_D0>; };
+					opp-64  { opp-level = <RPMH_REGULATOR_LEVEL_LOW_SVS>; };
+					opp-80  { opp-level = <RPMH_REGULATOR_LEVEL_LOW_SVS_L1>; };
+					opp-128 { opp-level = <RPMH_REGULATOR_LEVEL_SVS>; };
+					opp-144 { opp-level = <RPMH_REGULATOR_LEVEL_SVS_L0>; };
+					opp-192 { opp-level = <RPMH_REGULATOR_LEVEL_SVS_L1>; };
+					opp-224 { opp-level = <RPMH_REGULATOR_LEVEL_SVS_L2>; };
+					opp-256 { opp-level = <RPMH_REGULATOR_LEVEL_NOM>; };
+					opp-320 { opp-level = <RPMH_REGULATOR_LEVEL_NOM_L1>; };
+					opp-336 { opp-level = <RPMH_REGULATOR_LEVEL_NOM_L2>; };
+					opp-384 { opp-level = <RPMH_REGULATOR_LEVEL_TURBO>; };
+					opp-416 { opp-level = <RPMH_REGULATOR_LEVEL_TURBO_L1>; };
+					opp-432 { opp-level = <RPMH_REGULATOR_LEVEL_TURBO_L2>; };
+					opp-448 { opp-level = <RPMH_REGULATOR_LEVEL_TURBO_L3>; };
+					opp-452 { opp-level = <RPMH_REGULATOR_LEVEL_TURBO_L4>; };
+				};
+			};
+
 		};
 	};
 
@@ -19506,6 +19543,40 @@
 		target-path = "/soc/qcom,pmic_glink/qcom,ucsi/connector";
 		__overlay__ {
 			status = "disabled";
+		};
+	};
+
+	/* --- ADSP: bind the stock vendor node to the mainline PAS driver ----
+	 * The vendor node is qcom,sun-adsp-pas with cx/mx-supply phandles that
+	 * nothing in mainline binds.  Add the upstream compatible so the driver
+	 * matches, and give it the power-domains the driver's lcx/lmx proxy
+	 * lookups need (rpmhpd_ml lives under apps_rsc, added in @215).
+	 * firmware-name / memory-region / interrupts are already mainline-shaped
+	 * in the vendor node; qcom,smem-states resolves via the vendor smp2p.
+	 */
+	fragment@220 {
+		target-path = "/soc/remoteproc-adsp@03000000";
+		__overlay__ {
+			compatible = "qcom,sm8750-adsp-pas", "qcom,sun-adsp-pas";
+			power-domains = <&rpmhpd_ml RPMHPD_LCX>,
+					<&rpmhpd_ml RPMHPD_LMX>;
+			power-domain-names = "lcx", "lmx";
+			firmware-name = "qcom/sm8750/adsp.mdt", "qcom/sm8750/adsp_dtb.mdt";
+			status = "okay";
+		};
+	};
+
+	/* --- CDSP --- */
+	fragment@221 {
+		target-path = "/soc/remoteproc-cdsp@32300000";
+		__overlay__ {
+			compatible = "qcom,sm8750-cdsp-pas", "qcom,sun-cdsp-pas";
+			power-domains = <&rpmhpd_ml RPMHPD_CX>,
+					<&rpmhpd_ml RPMHPD_MXC>,
+					<&rpmhpd_ml RPMHPD_NSP>;
+			power-domain-names = "cx", "mxc", "nsp";
+			firmware-name = "qcom/sm8750/cdsp.mdt", "qcom/sm8750/cdsp_dtb.mdt";
+			status = "okay";
 		};
 	};
 

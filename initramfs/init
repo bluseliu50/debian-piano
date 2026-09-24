@@ -162,25 +162,48 @@ busybox telnetd -p 23 -l /bin/sh && say "telnetd up on :23" || say "WARN telnetd
 
 say "debug environment up: NCM 10.42.0.2, ssh root@10.42.0.2"
 
-# Load the touch stack (SPI controller first; the touch driver defers until
-# the DSI panel is prepared — a defer message here is expected on first boots)
-#modprobe spi-geni-qcom 2>/dev/null
-#modprobe nt36532e_ts 2>/dev/null
-
-# WLAN/BT/remoteproc/battery stack (best effort, non-fatal)
-#modprobe pwrseq-qcom-wcn 2>/dev/null
-#modprobe hci_uart 2>/dev/null
-#modprobe phy-qcom-qmp-pcie 2>/dev/null
-( sleep 8; modprobe ath12k 2>/dev/null ) &
-#modprobe qrtr 2>/dev/null
+# --- subsystem bring-up (staged, best effort, never fatal) -------------------
+# Order matters: providers before consumers.  Each stage is detached so a
+# slow or failing subsystem cannot stall the debug environment.
+#
+# pd-mapper must run BEFORE pmic_glink/PAS: it publishes the protection-domain
+# service registry the ADSP-side glink clients look up.
 if command -v piano-pd-locator >/dev/null 2>&1; then
-  ( piano-pd-locator >/dev/null 2>&1 ) &
+  piano-pd-locator >/run/pd-locator.log 2>&1 &
 fi
-#modprobe qcom_q6v5_pas 2>/dev/null
-#modprobe pmic_glink 2>/dev/null
-#modprobe pmic_glink_altmode 2>/dev/null
-#modprobe qcom_battmgr 2>/dev/null
-( sleep 12; modprobe snd-soc-sc8280xp 2>/dev/null; modprobe fastrpc 2>/dev/null ) &
+
+# Stage A: ADSP/CDSP -> this is what makes pmic_glink + battmgr work at all.
+(
+  sleep 3
+  modprobe qcom_q6v5_pas 2>/dev/null
+  sleep 6
+  # Stage B: battery/charger over the now-live ADSP glink
+  modprobe pmic_glink 2>/dev/null
+  modprobe qcom_battmgr 2>/dev/null
+) >/run/stage-ab.log 2>&1 &
+
+# Stage C: touch (SPI controller first; the touch driver gates on panel_on)
+(
+  sleep 4
+  modprobe spi-geni-qcom 2>/dev/null
+  modprobe nt36532e_ts 2>/dev/null
+) >/run/stage-c.log 2>&1 &
+
+# Stage D: Bluetooth (serdev on the combo UART)
+(
+  sleep 5
+  modprobe pwrseq-qcom-wcn 2>/dev/null
+  modprobe hci_uart 2>/dev/null
+) >/run/stage-d.log 2>&1 &
+
+# Stage E: PCIe0 + WLAN last — enumeration is slow and resets the bus
+(
+  sleep 8
+  modprobe phy-qcom-qmp-pcie 2>/dev/null
+  modprobe pcie-qcom 2>/dev/null
+  sleep 2
+  modprobe ath12k 2>/dev/null
+) >/run/stage-e.log 2>&1 &
 
 # Non-interactive boot smoke report in the background
 if command -v piano-tests >/dev/null 2>&1; then
