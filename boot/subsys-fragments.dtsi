@@ -336,9 +336,15 @@
 			 * registers at +0x100000; the upstream driver expects the
 			 * pin-window base directly, so rebase reg to 0x0f100000 /
 			 * 0x102000 — identical physical registers, the geometry
-			 * upstream sm8750.dtsi uses. */
+			 * upstream sm8750.dtsi uses.  CRITICAL: /soc on the
+			 * vendor tree is #address-cells=1/#size-cells=1 (upstream
+			 * dtsi uses 2/2) — write ONE-cell tuples.  The 4-cell
+			 * form parsed as two phantom resources (first: addr 0x0
+			 * size 0xf100000) and the probe died -EBUSY, leaving the
+			 * TLMM dead and every GPIO consumer deferred (2026-09-24
+			 * field log). */
 			compatible = "qcom,sm8750-tlmm", "qcom,sun-tlmm";
-			reg = <0x0 0x0f100000 0x0 0x102000>;
+			reg = <0xf100000 0x102000>;
 			wlan_en_ml: wlan-en-state {
 				pins = "gpio16";
 				function = "gpio";

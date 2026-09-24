@@ -114,7 +114,13 @@ python3 "$MKBOOTIMG" \
     -o "$OUTPUT_DIR/boot.img"
 
 # --- dtbo.img: subsystem overlay (nopd9 base + subsys-fragments.dtsi) ---------
+# Full bring-up set first, then the minimal touch set becomes dtbo.img:
+# field rounds flash dtbo.img by default; dtbo-full.img carries the whole
+# subsystem set (adsp/audio/bt/pcie) for later bisect rounds.
 python3 "$SPLICE"
+python3 "$BUILD_DTBO" --dts "$DTBO_DTS" --output "$OUTPUT_DIR/dtbo-full.img"
+
+python3 "$SPLICE" --only 225,227,260
 python3 "$BUILD_DTBO" --dts "$DTBO_DTS" --output "$OUTPUT_DIR/dtbo.img"
 
 # --- verification --------------------------------------------------------------
@@ -124,10 +130,13 @@ cmp -s "$WORK/verify/kernel" "$IMAGE" \
     || die "boot.img does not round-trip to the kernel Image bytes"
 [ -s "$OUTPUT_DIR/dtbo.img" ] || die "dtbo.img is empty"
 
+[ -s "$OUTPUT_DIR/dtbo-full.img" ] || die "dtbo-full.img is empty"
 BOOT_SHA=$(sha256sum "$OUTPUT_DIR/boot.img" | awk '{print $1}')
 DTBO_SHA=$(sha256sum "$OUTPUT_DIR/dtbo.img" | awk '{print $1}')
+DTBO_FULL_SHA=$(sha256sum "$OUTPUT_DIR/dtbo-full.img" | awk '{print $1}')
 BOOT_SIZE=$(stat -c%s "$OUTPUT_DIR/boot.img")
 DTBO_SIZE=$(stat -c%s "$OUTPUT_DIR/dtbo.img")
+DTBO_FULL_SIZE=$(stat -c%s "$OUTPUT_DIR/dtbo-full.img")
 
 # --- manifest -------------------------------------------------------------------
 {
@@ -138,6 +147,9 @@ DTBO_SIZE=$(stat -c%s "$OUTPUT_DIR/dtbo.img")
     echo "files:"
     printf '  boot.img  %10d bytes  sha256 %s\n' "$BOOT_SIZE" "$BOOT_SHA"
     printf '  dtbo.img  %10d bytes  sha256 %s\n' "$DTBO_SIZE" "$DTBO_SHA"
+    printf '  dtbo.img        (minimal touch set: nopd9 + tlmm + spi2 + ramoops)\n'
+    printf '  dtbo-full.img   (whole bring-up set: adsp/audio/bt/pcie; bisect use)\n'
+    printf '  dtbo-full.img %10d bytes  sha256 %s\n' "$DTBO_FULL_SIZE" "$DTBO_FULL_SHA"
     echo
     echo "verified: boot.img unpacks byte-identical to the built Image."
     echo
