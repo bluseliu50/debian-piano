@@ -16,7 +16,7 @@
 	};
 
 	fragment@221 {
-		target-path = "/soc/dma-controller@a00000";
+		target-path = "/soc/qcom,gpi-dma@a00000";
 		__overlay__ {
 			status = "okay";
 		};
