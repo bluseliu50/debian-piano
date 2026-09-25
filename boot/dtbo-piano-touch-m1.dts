@@ -91,6 +91,8 @@
 				gpio-controller;
 				#gpio-cells = <2>;
 				gpio-ranges = <&piano_tlmm_ml 0 0 216>;
+				/* MiCode sun.dtsi: qcom,gpios-reserved, in range form. */
+				gpio-reserved-ranges = <36 4>, <48 4>, <74 1>;
 				interrupt-controller;
 				#interrupt-cells = <2>;
 			};
