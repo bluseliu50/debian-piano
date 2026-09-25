@@ -60,4 +60,24 @@
 			qcom,bcm-voters = <&apps_bcm_voter_ml>;
 		};
 	};
+
+	fragment@224 {
+		target = <&cnoc_main>;
+		__overlay__ {
+			compatible = "qcom,sm8750-cnoc-main";
+			#interconnect-cells = <2>;
+			qcom,bcm-voter-names = "hlos";
+			qcom,bcm-voters = <&apps_bcm_voter_ml>;
+		};
+	};
+
+	fragment@225 {
+		target = <&system_noc>;
+		__overlay__ {
+			compatible = "qcom,sm8750-system-noc";
+			#interconnect-cells = <2>;
+			qcom,bcm-voter-names = "hlos";
+			qcom,bcm-voters = <&apps_bcm_voter_ml>;
+		};
+	};
 };
