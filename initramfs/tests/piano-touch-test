@@ -58,11 +58,19 @@ if [ ! -e /proc/nvt_thp_status ]; then
     done
     echo "== GENI SPI driver binding =="
     ls -l /sys/bus/platform/drivers/geni_spi 2>/dev/null || echo "geni_spi driver directory missing"
+    echo "== deferred touch dependencies =="
+    if [ ! -r /sys/kernel/debug/devices_deferred ]; then
+        mount -t debugfs debugfs /sys/kernel/debug 2>/dev/null || true
+    fi
+    if [ -r /sys/kernel/debug/devices_deferred ]; then
+        grep -E '(^spi0\.0|a88000\.spi|touch_avdd_vreg)' /sys/kernel/debug/devices_deferred || true
+    else
+        echo "devices_deferred unavailable"
+    fi
     echo "== dmesg (touch/SPI/panel) =="
     dmesg 2>/dev/null | grep -iE 'nv[t65]|geni|spi|touch|panel' | tail -50
-    echo "Hints: the touch DTBO must enable the SE2 QUP parent before the"
-    echo "driver can bind; a registered SPI device with no proc node points"
-    echo "to the GPIO/chip-ID stage instead."
+    echo "Hints: no SPI device points to the QUP/GPI path; spi0.0 waiting"
+    echo "for a panel or GPIO supplier needs that dependency resolved first."
     exit 1
 fi
 

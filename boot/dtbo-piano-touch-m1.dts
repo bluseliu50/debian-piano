@@ -80,20 +80,4 @@
 			qcom,bcm-voters = <&apps_bcm_voter_ml>;
 		};
 	};
-
-	fragment@226 {
-		target-path = "/soc";
-		__overlay__ {
-			piano_tlmm_ml: pinctrl@f100000 {
-				compatible = "qcom,sm8750-tlmm";
-				reg = <0xf100000 0x102000>;
-				interrupts = <GIC_SPI 208 IRQ_TYPE_LEVEL_HIGH>;
-				gpio-controller;
-				#gpio-cells = <2>;
-				gpio-ranges = <&piano_tlmm_ml 0 0 216>;
-				interrupt-controller;
-				#interrupt-cells = <2>;
-			};
-		};
-	};
 };
