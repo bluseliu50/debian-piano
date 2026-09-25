@@ -33,6 +33,10 @@
 			/* Match the upstream GENI SPI driver and its clock lookup. */
 			compatible = "qcom,geni-spi";
 			clock-names = "se";
+			/* The downstream TLMM provider is not bound by mainline yet.
+			 * Leave pin muxing untouched while proving controller probe. */
+			pinctrl-0 = <>;
+			pinctrl-1 = <>;
 		};
 	};
 };
