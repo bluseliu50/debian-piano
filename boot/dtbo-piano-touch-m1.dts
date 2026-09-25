@@ -2,13 +2,21 @@
  * Touch-only trial overlay.  Keep the milestone-1 USB/display overlay as the
  * included base and enable the QUP wrapper that owns SE2.  The base overlay
  * already enables spi@a88000 and supplies its pin states and touch child;
- * without the wrapper, Linux never registers the GENI SPI master.
+ * without the wrapper and its GPI DMA provider, Linux never registers the
+ * GENI SPI master.  The downstream Xiaomi DT enables both nodes together.
  */
 #include "dtbo-piano-usb-nopd9.dts"
 
 / {
 	fragment@220 {
 		target-path = "/soc/qcom,qupv3_1_geni_se@ac0000";
+		__overlay__ {
+			status = "okay";
+		};
+	};
+
+	fragment@221 {
+		target-path = "/soc/dma-controller@a00000";
 		__overlay__ {
 			status = "okay";
 		};
