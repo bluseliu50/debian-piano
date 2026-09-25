@@ -26,4 +26,13 @@
 			status = "okay";
 		};
 	};
+
+	fragment@222 {
+		target-path = "/soc/qcom,qupv3_1_geni_se@ac0000/spi@a88000";
+		__overlay__ {
+			/* Match the upstream GENI SPI driver and its clock lookup. */
+			compatible = "qcom,geni-spi";
+			clock-names = "se";
+		};
+	};
 };
