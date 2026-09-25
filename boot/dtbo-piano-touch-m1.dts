@@ -2,10 +2,11 @@
  * Touch-only trial overlay.  Keep the milestone-1 USB/display overlay as the
  * included base and enable the QUP wrapper that owns SE2.  The base overlay
  * already enables spi@a88000 and supplies its pin states and touch child;
- * without the wrapper and its GPI DMA provider, Linux never registers the
- * GENI SPI master.  The downstream Xiaomi DT enables both nodes together.
+ * without the wrapper, GPI DMA, and mainline interconnect bindings, Linux
+ * never registers the GENI SPI master.
  */
 #include "dtbo-piano-usb-nopd9.dts"
+#include <dt-bindings/dma/qcom-gpi.h>
 
 / {
 	fragment@220 {
@@ -16,13 +17,14 @@
 	};
 
 	fragment@221 {
-		 target-path = "/soc/qcom,gpi-dma@a00000";
-		 __overlay__ {
+		target-path = "/soc/qcom,gpi-dma@a00000";
+		__overlay__ {
 			/* The stock DT uses downstream-only names; map them to the
 			 * mainline GPI driver without changing its hardware geometry. */
-			compatible = "qcom,gpi-dma", "qcom,sm6350-gpi-dma";
+			compatible = "qcom,sm8750-gpi-dma", "qcom,sm6350-gpi-dma";
 			dma-channels = <12>;
 			dma-channel-mask = <0x1e>;
+			#dma-cells = <3>;
 			status = "okay";
 		};
 	};
@@ -33,10 +35,29 @@
 			/* Match the upstream GENI SPI driver and its clock lookup. */
 			compatible = "qcom,geni-spi";
 			clock-names = "se";
+			interconnects = <&clk_virt MASTER_QUP_CORE_1 QCOM_ICC_TAG_ALWAYS
+					 &clk_virt SLAVE_QUP_CORE_1 QCOM_ICC_TAG_ALWAYS>,
+					<&gem_noc MASTER_APPSS_PROC QCOM_ICC_TAG_ALWAYS
+					 &config_noc SLAVE_QUP_1 QCOM_ICC_TAG_ALWAYS>,
+					<&aggre1_noc MASTER_QUP_1 QCOM_ICC_TAG_ALWAYS
+					 &mc_virt SLAVE_EBI1 QCOM_ICC_TAG_ALWAYS>;
+			dmas = <&gpi_dma1 0 2 QCOM_GPI_SPI>,
+			       <&gpi_dma1 1 2 QCOM_GPI_SPI>;
+
 			/* The downstream TLMM provider is not bound by mainline yet.
 			 * Leave pin muxing untouched while proving controller probe. */
 			pinctrl-0 = <>;
 			pinctrl-1 = <>;
+		};
+	};
+
+	fragment@223 {
+		target = <&clk_virt>;
+		__overlay__ {
+			compatible = "qcom,sm8750-clk-virt";
+			#interconnect-cells = <2>;
+			qcom,bcm-voter-names = "hlos";
+			qcom,bcm-voters = <&apps_bcm_voter_ml>;
 		};
 	};
 };
