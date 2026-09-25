@@ -32,11 +32,13 @@ case "$MAX_FRAMES"     in ''|*[!0-9]*) echo "piano-touch-test: --max-frames need
 
 if [ ! -e /proc/nvt_thp_status ]; then
     echo "piano-touch-test: /proc/nvt_thp_status missing — loading modules"
+    gpi_rc=0
     spi_rc=0
     touch_rc=0
+    modprobe gpi 2>&1 || gpi_rc=$?
     modprobe spi-geni-qcom 2>&1 || spi_rc=$?
     modprobe nt36532e_ts 2>&1 || touch_rc=$?
-    echo "piano-touch-test: modprobe spi-geni-qcom rc=$spi_rc nt36532e_ts rc=$touch_rc"
+    echo "piano-touch-test: modprobe gpi rc=$gpi_rc spi-geni-qcom rc=$spi_rc nt36532e_ts rc=$touch_rc"
     i=0
     while [ $i -lt 10 ] && [ ! -e /proc/nvt_thp_status ]; do
         sleep 1

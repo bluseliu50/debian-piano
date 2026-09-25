@@ -16,8 +16,13 @@
 	};
 
 	fragment@221 {
-		target-path = "/soc/qcom,gpi-dma@a00000";
-		__overlay__ {
+		 target-path = "/soc/qcom,gpi-dma@a00000";
+		 __overlay__ {
+			/* The stock DT uses downstream-only names; map them to the
+			 * mainline GPI driver without changing its hardware geometry. */
+			compatible = "qcom,gpi-dma", "qcom,sm6350-gpi-dma";
+			dma-channels = <12>;
+			dma-channel-mask = <0x1e>;
 			status = "okay";
 		};
 	};
