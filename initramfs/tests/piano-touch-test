@@ -48,6 +48,7 @@ fi
 
 if [ ! -e /proc/nvt_thp_status ]; then
     echo "piano-touch-test: touch driver did not probe."
+    echo "Do not load pinctrl-sm8750: its probe caused a device reboot."
     echo "== loaded touch/SPI modules =="
     grep -iE '(^| )(spi_geni|nt36532e_ts)( |$)' /proc/modules 2>/dev/null || true
     echo "== SPI devices =="
