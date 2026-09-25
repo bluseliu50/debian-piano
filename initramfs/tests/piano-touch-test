@@ -32,8 +32,11 @@ case "$MAX_FRAMES"     in ''|*[!0-9]*) echo "piano-touch-test: --max-frames need
 
 if [ ! -e /proc/nvt_thp_status ]; then
     echo "piano-touch-test: /proc/nvt_thp_status missing — loading modules"
-    modprobe spi-geni-qcom 2>&1
-    modprobe nt36532e_ts 2>&1
+    spi_rc=0
+    touch_rc=0
+    modprobe spi-geni-qcom 2>&1 || spi_rc=$?
+    modprobe nt36532e_ts 2>&1 || touch_rc=$?
+    echo "piano-touch-test: modprobe spi-geni-qcom rc=$spi_rc nt36532e_ts rc=$touch_rc"
     i=0
     while [ $i -lt 10 ] && [ ! -e /proc/nvt_thp_status ]; do
         sleep 1
@@ -43,8 +46,21 @@ fi
 
 if [ ! -e /proc/nvt_thp_status ]; then
     echo "piano-touch-test: touch driver did not probe."
-    echo "Hints: dmesg | grep -iE 'nv[tt]|spi|panel' — the driver defers"
-    echo "probe until the DSI panel is prepared (DRM panel follower)."
+    echo "== loaded touch/SPI modules =="
+    grep -iE '(^| )(spi_geni|nt36532e_ts)( |$)' /proc/modules 2>/dev/null || true
+    echo "== SPI devices =="
+    for dev in /sys/bus/spi/devices/*; do
+        [ -e "$dev" ] || continue
+        printf '%s: ' "${dev##*/}"
+        cat "$dev/modalias" 2>/dev/null || echo "(no modalias)"
+    done
+    echo "== GENI SPI driver binding =="
+    ls -l /sys/bus/platform/drivers/geni_spi 2>/dev/null || echo "geni_spi driver directory missing"
+    echo "== dmesg (touch/SPI/panel) =="
+    dmesg 2>/dev/null | grep -iE 'nv[t65]|geni|spi|touch|panel' | tail -50
+    echo "Hints: the touch DTBO must enable the SE2 QUP parent before the"
+    echo "driver can bind; a registered SPI device with no proc node points"
+    echo "to the GPIO/chip-ID stage instead."
     exit 1
 fi
 

@@ -2,14 +2,16 @@
 # build-test-bootimg.sh — build the minimal piano RAM-boot test image set.
 #
 # Usage:
-#   scripts/build-test-bootimg.sh --kernel-dir DIR --output-dir DIR
+#   scripts/build-test-bootimg.sh --kernel-dir DIR --output-dir DIR \
+#       [--dtbo-source PATH]
 #
 # Produces exactly three files in --output-dir:
 #   boot.img      v4 boot image wrapping the kernel Image (which embeds the
 #                 debug initramfs via CONFIG_INITRAMFS_SOURCE). The external
 #                 ramdisk is empty — the only image form ABL accepts.
 #   dtbo.img      USB-nopd9 overlay, deterministic build from
-#                 boot/dtbo-piano-usb-nopd9.dts; flash to dtbo_b before boot.
+#                 boot/dtbo-piano-usb-nopd9.dts by default; flash to dtbo_b
+#                 before boot.
 #   MANIFEST.txt  provenance, hashes, verified boot recipe.
 #
 # PROVEN BOOT CONTRACT (on-device 2026-09-22/23, umbrella runbook §7):
@@ -38,11 +40,13 @@ die() {
 
 KERNEL_DIR=""
 OUTPUT_DIR=""
+DTBO_DTS=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --kernel-dir) KERNEL_DIR=${2-}; shift 2 ;;
         --output-dir) OUTPUT_DIR=${2-}; shift 2 ;;
+        --dtbo-source) DTBO_DTS=${2-}; shift 2 ;;
         -h|--help)    usage ;;
         *)            die "unknown option: $1" ;;
     esac
@@ -57,7 +61,7 @@ PARAMS_FILE="$REPO_ROOT/boot/stock-boot-params.env"
 MKBOOTIMG="$REPO_ROOT/mkbootimg/mkbootimg.py"
 UNPACK="$REPO_ROOT/mkbootimg/unpack_bootimg.py"
 BUILD_DTBO="$REPO_ROOT/scripts/build-dtbo.py"
-DTBO_DTS="$REPO_ROOT/boot/dtbo-piano-usb-nopd9.dts"
+DTBO_DTS=${DTBO_DTS:-"$REPO_ROOT/boot/dtbo-piano-usb-nopd9.dts"}
 
 IMAGE=$KERNEL_DIR/arch/arm64/boot/Image
 UTSRELEASE_H=$KERNEL_DIR/include/generated/utsrelease.h
@@ -111,7 +115,7 @@ python3 "$MKBOOTIMG" \
     --ramdisk_offset "$VB_RAMDISK_OFFSET" --tags_offset "$VB_TAGS_OFFSET" \
     -o "$OUTPUT_DIR/boot.img"
 
-# --- dtbo.img: deterministic USB-nopd9 overlay --------------------------------
+# --- dtbo.img: deterministic overlay ------------------------------------------
 echo "build-test-bootimg: building dtbo.img from $DTBO_DTS"
 python3 "$BUILD_DTBO" --dts "$DTBO_DTS" --output "$OUTPUT_DIR/dtbo.img"
 
