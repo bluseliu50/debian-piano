@@ -371,9 +371,6 @@
 
 			power-domains = <&gcc GCC_PCIE_0_GDSC>;
 
-			phys = <&pcie0_phy_ml>;
-			phy-names = "pciephy";
-
 			pinctrl-names = "default";
 			pinctrl-0 = <&pcie0_default_ml>;
 			pinctrl-1;
@@ -445,6 +442,13 @@
 
 			wake-gpios = <&piano_tlmm_ml 104 GPIO_ACTIVE_HIGH>;
 			reset-gpios = <&piano_tlmm_ml 102 GPIO_ACTIVE_LOW>;
+
+			/* Round-3 fix: the 7.2.6 pcie-qcom driver takes the PHY
+			 * from the ROOT PORT node (devm_of_phy_get inside
+			 * qcom_pcie_parse_port); without it the probe failed
+			 * -ENODEV and fell back to the legacy host binding.
+			 */
+			phys = <&pcie0_phy_ml>;
 
 			wifi@0 {
 				compatible = "pci17cb,110e";

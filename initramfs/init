@@ -234,6 +234,12 @@ say "debug environment up: NCM 10.42.0.2, ssh root@10.42.0.2"
 
   stage 6 "report"
   dmesg | grep -iE 'pwrseq|pwrctrl|pcie|qmp|ath12k|mhi|bluetooth|hci|geni|898000' | tail -60 >> "$LOG" 2>&1
+  # SPMI chain evidence (arbiter -> PMIC container -> mfd -> gpio chip):
+  # the BT_EN gpio lives on pm8550ve_f_gpios and its absence is what
+  # deferred the pwrseq on both field rounds so far.
+  ls /sys/bus/spmi/devices >> "$LOG" 2>&1
+  ls /sys/bus/platform/devices 2>/dev/null | grep -iE 'c42d000|8800|spmi' >> "$LOG" 2>&1
+  dmesg | grep -iE 'spmi|pmic.arb|pmic_gpio|gpiochip' | tail -25 >> "$LOG" 2>&1
   echo "piano-wlanbt: stages complete (see /run/wlanbt-stages.log)" > /dev/kmsg
 ) &
 
