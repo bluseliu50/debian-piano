@@ -28,6 +28,24 @@ mount -t proc proc /proc
 mount -t sysfs sysfs /sys
 mount -t configfs configfs /sys/kernel/config
 
+# --- previous boot's console log (ramoops/pstore) -----------------------------
+# The kernel mirrors its console into the stock ramoops region; after a hard
+# reset the log of the boot that died shows up here. Keep a copy in /run.
+mkdir -p /sys/fs/pstore
+if mount -t pstore pstore /sys/fs/pstore 2>/dev/null; then
+  if [ -n "$(ls /sys/fs/pstore 2>/dev/null)" ]; then
+    mkdir -p /run/pstore-prev
+    cp /sys/fs/pstore/* /run/pstore-prev/ 2>/dev/null
+    say "pstore: previous boot log kept in /run/pstore-prev"
+  fi
+fi
+
+# --- apps SMMU: let QUP1 GPI DMA through ---------------------------------------
+# ABL leaves the apps SMMU enabled with unmatched streams faulting; the touch
+# SPI DMA (streams 0xb6/0xa3) would reset the SoC on its first transfer.
+# Match them now, before anything can load the SPI stack.
+piano-qup-smmu > /run/qup-smmu.log 2>&1 || say "WARN piano-qup-smmu failed (see /run/qup-smmu.log)"
+
 # --- framebuffer beacon (bounded) -------------------------------------------
 # Alternate white/black fills of the whole splash framebuffer so userspace
 # progress is visible with zero driver dependencies: /dev/fb0 when simpledrm
@@ -159,28 +177,16 @@ else
   say "dropbear unusable ($(head -c 80 /run/dbk.log 2>/dev/null)); telnetd fallback"
 fi
 busybox telnetd -p 23 -l /bin/sh && say "telnetd up on :23" || say "WARN telnetd failed"
+# Evidence pull over the USB link: http://10.42.0.2:8080/<file under /run>
+busybox httpd -p 8080 -h /run && say "httpd serving /run on :8080" || say "WARN httpd failed"
 
 say "debug environment up: NCM 10.42.0.2, ssh root@10.42.0.2"
 
-# Load the touch stack (SPI controller first; the touch driver defers until
-# the DSI panel is prepared — a defer message here is expected on first boots)
-#modprobe spi-geni-qcom 2>/dev/null
-#modprobe nt36532e_ts 2>/dev/null
-
-# WLAN/BT/remoteproc/battery stack (best effort, non-fatal)
-#modprobe pwrseq-qcom-wcn 2>/dev/null
-#modprobe hci_uart 2>/dev/null
-#modprobe phy-qcom-qmp-pcie 2>/dev/null
-( sleep 8; modprobe ath12k 2>/dev/null ) &
-#modprobe qrtr 2>/dev/null
-if command -v piano-pd-locator >/dev/null 2>&1; then
-  ( piano-pd-locator >/dev/null 2>&1 ) &
-fi
-#modprobe qcom_q6v5_pas 2>/dev/null
-#modprobe pmic_glink 2>/dev/null
-#modprobe pmic_glink_altmode 2>/dev/null
-#modprobe qcom_battmgr 2>/dev/null
-( sleep 12; modprobe snd-soc-sc8280xp 2>/dev/null; modprobe fastrpc 2>/dev/null ) &
+# Keep the display-safe image passive after NCM setup.  ADSP modules and
+# firmware remain staged for offline development, but no remoteproc, QRTR, or
+# RPMh client is loaded during boot.  This preserves the milestone-1 display
+# handoff while the ADSP power-domain wiring is being developed separately.
+say "ADSP trial disabled: display-safe boot"
 
 # Non-interactive boot smoke report in the background
 if command -v piano-tests >/dev/null 2>&1; then

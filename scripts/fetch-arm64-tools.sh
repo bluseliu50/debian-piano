@@ -7,9 +7,11 @@
 # dpkg needed) and stages a ready-to-embed userland tree:
 #
 #   DIR/musl-sysroot/        Alpine musl-dev (aarch64) sysroot used to
-#                            cross-compile the static piano-pd-locator
-#                            (crt1.o + libc.a only; toolchain material,
-#                            never shipped into any repository)
+#                            cross-compile the static piano-pd-locator and
+#                            piano-touch-view (crt1.o + libc.a, plus the
+#                            compiler-rt builtins that musl's long double
+#                            printf needs; toolchain material, never
+#                            shipped into any repository)
 #   DIR/iw/tree/             iw + its shared-library closure (libnl-3,
 #                            libnl-genl-3, libc) — used by the WLAN test
 #   DIR/dropbear/tree/       full dropbear userland tree:
@@ -169,6 +171,23 @@ if [ ! -f "$SYSROOT/usr/lib/libc.a" ] || [ ! -f "$SYSROOT/usr/lib/crt1.o" ]; the
     tar -xzf "$WORK/musl-dev.apk" -C "$SYSROOT" || die "cannot extract musl-dev (not gzip?)"
     [ -f "$SYSROOT/usr/lib/libc.a" ] || die "musl-dev apk lacks usr/lib/libc.a"
     [ -f "$SYSROOT/usr/lib/crt1.o" ] || die "musl-dev apk lacks usr/lib/crt1.o"
+fi
+
+# compiler-rt builtins for the same target (musl's stdio uses 128-bit long
+# double soft-float helpers that the host clang has no aarch64 runtime for).
+# Pinned to a stable Alpine branch.
+CRT_VER=20.1.8-r0
+CRT_LIB="$SYSROOT/usr/lib/libclang_rt.builtins-aarch64.a"
+if [ ! -f "$CRT_LIB" ]; then
+    echo "fetch-arm64-tools: fetching compiler-rt $CRT_VER (aarch64) for the sysroot..."
+    curl -fsSL "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/aarch64/compiler-rt-$CRT_VER.apk" \
+        -o "$WORK/compiler-rt.apk" || die "cannot download compiler-rt"
+    mkdir -p "$WORK/compiler-rt"
+    tar -xzf "$WORK/compiler-rt.apk" -C "$WORK/compiler-rt" 2>/dev/null \
+        || die "cannot extract compiler-rt (not gzip?)"
+    found=$(find "$WORK/compiler-rt" -name libclang_rt.builtins-aarch64.a | head -1)
+    [ -n "$found" ] || die "compiler-rt apk lacks libclang_rt.builtins-aarch64.a"
+    install -m 0644 "$found" "$CRT_LIB"
 fi
 
 # --- stage iw tree -----------------------------------------------------------
