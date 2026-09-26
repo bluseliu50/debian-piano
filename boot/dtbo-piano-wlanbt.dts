@@ -462,4 +462,18 @@
 			};
 		};
 	};
+
+	/*
+	 * Round-2 fix (field log 2026-09-26): uart14 deferred forever on
+	 * "supplier f000000.pinctrl not ready" — the stock interrupts-extended
+	 * carries a TLMM gpio27 wake phandle into the never-bound vendor TLMM
+	 * node.  Drop it for the upstream single-GIC interrupt form.
+	 */
+	fragment@236 {
+		target-path = "/soc/qcom,qupv3_2_geni_se@8c0000/qcom,qup_uart@898000";
+		__overlay__ {
+			interrupts = <GIC_SPI 461 IRQ_TYPE_LEVEL_HIGH>;
+			interrupts-extended;
+		};
+	};
 };
