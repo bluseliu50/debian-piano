@@ -9,8 +9,9 @@
 #   boot.img      v4 boot image wrapping the kernel Image (which embeds the
 #                 debug initramfs via CONFIG_INITRAMFS_SOURCE). The external
 #                 ramdisk is empty — the only image form ABL accepts.
-#   dtbo.img      USB-nopd9 overlay, deterministic build from
-#                 boot/dtbo-piano-usb-nopd9.dts by default; flash to dtbo_b
+#   dtbo.img      test overlay, deterministic build from
+#                 boot/dtbo-piano-touch-v2.dts by default (milestone-1
+#                 USB/display overlay + touch path); flash to dtbo_b
 #                 before boot.
 #   MANIFEST.txt  provenance, hashes, verified boot recipe.
 #
@@ -61,7 +62,7 @@ PARAMS_FILE="$REPO_ROOT/boot/stock-boot-params.env"
 MKBOOTIMG="$REPO_ROOT/mkbootimg/mkbootimg.py"
 UNPACK="$REPO_ROOT/mkbootimg/unpack_bootimg.py"
 BUILD_DTBO="$REPO_ROOT/scripts/build-dtbo.py"
-DTBO_DTS=${DTBO_DTS:-"$REPO_ROOT/boot/dtbo-piano-usb-nopd9.dts"}
+DTBO_DTS=${DTBO_DTS:-"$REPO_ROOT/boot/dtbo-piano-touch-v2.dts"}
 
 IMAGE=$KERNEL_DIR/arch/arm64/boot/Image
 UTSRELEASE_H=$KERNEL_DIR/include/generated/utsrelease.h

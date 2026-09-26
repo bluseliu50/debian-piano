@@ -32,9 +32,10 @@ probe_all() {
 
     # touch
     if [ -e /proc/nvt_thp_status ]; then
-        S_TOUCH=1; E_TOUCH="driver probed"
+        S_TOUCH=1
+        E_TOUCH="fw $(sed -n 's/^fw_ver: //p' /proc/nvt_thp_status), $(sed -n 's/^frames: //p' /proc/nvt_thp_status) frames"
     else
-        S_TOUCH=0; E_TOUCH="no /proc/nvt_thp_status (panel/SPI)"
+        S_TOUCH=2; E_TOUCH="not loaded (menu 1)"
     fi
 
     # display
@@ -137,7 +138,9 @@ while :; do
     cat <<'MENU'
 
   -- device tests ------------------------------------------------------
-   1) touch     stream raw frames, 30 s (touch the screen)
+   1) touch     bring-up + 30 s draw test on screen and console
+   1s) touch    same, stats only (no drawing)
+   1u) touch    keep a uinput touchscreen running until reboot
    2) display   colour bars + noise, hold on each
    3) audio     ADSP/soundwire/soundcard chain  (+ tone with 3a)
    3a) audio + playback test tone
@@ -156,6 +159,8 @@ MENU
     read -r choice || break
     case "$choice" in
         1) piano-touch-test --seconds 30; pause ;;
+        1s) piano-touch-test --view stats --seconds 10; pause ;;
+        1u) piano-touch-test --upto 3 && piano-touch-test --stage 5; pause ;;
         2) piano-display-test --bars --noise --hold 2; pause ;;
         3) piano-audio-test; pause ;;
         3a) piano-audio-test --play; pause ;;

@@ -29,6 +29,10 @@
  *
  * Usage: piano-touch-view [MODE] [options]
  *   MODE: stats (default) | map | points | paint | dump | input
+ *         paint draws finger traces on the framebuffer and logs touch
+ *         down/move/up on the console; three fingers or "c" + Enter clear
+ *         the canvas, "q" + Enter stops, and the console picture is put
+ *         back when it ends
  *         input creates a multitouch evdev device through /dev/uinput
  *   --seconds N      stop after N seconds (default 30, 0 = forever)
  *   --type N         matrix frame type (default: most common in the
@@ -104,10 +108,18 @@ static int have_reference;
 static int delta[MAX_NODES];
 
 static struct {
-	uint8_t *mem;
+	uint8_t *mem, *saved;
 	unsigned int width, height, stride, bpp;
 	size_t size;
 } fb;
+
+/* contacts tracked across frames, in SCREEN_W x SCREEN_H coordinates */
+static struct {
+	int next_id;
+	struct {
+		int active, id, x, y, px, py, fresh, ended;
+	} slot[MAX_POINTS];
+} trk;
 
 static void on_signal(int sig)
 {
@@ -291,8 +303,32 @@ static int fb_open(void)
 		fb.mem = NULL;
 		return -errno;
 	}
+	/* keep the console picture to put it back at the end */
+	fb.saved = malloc(fb.size);
+	if (fb.saved)
+		memcpy(fb.saved, fb.mem, fb.size);
 	memset(fb.mem, 0, fb.size);
 	return 0;
+}
+
+static void fb_clear(void)
+{
+	if (fb.mem)
+		memset(fb.mem, 0, fb.size);
+}
+
+static void fb_close(void)
+{
+	if (!fb.mem)
+		return;
+	if (fb.saved)
+		memcpy(fb.mem, fb.saved, fb.size);
+	else
+		memset(fb.mem, 0, fb.size);
+	munmap(fb.mem, fb.size);
+	fb.mem = NULL;
+	free(fb.saved);
+	fb.saved = NULL;
 }
 
 static void fb_dot(int x, int y, int radius, uint32_t color)
@@ -338,30 +374,131 @@ static void to_screen(const struct point *pt, int width, int height,
 		*y = height - 1;
 }
 
-static void paint(const struct point *pts, int n)
+/* match this frame's contacts to the slots of the previous one */
+static int track(const struct point *pts, int n)
+{
+	int px[MAX_POINTS], py[MAX_POINTS], taken[MAX_POINTS] = { 0 };
+	int i, s, active = 0;
+
+	for (i = 0; i < n; i++)
+		to_screen(&pts[i], SCREEN_W, SCREEN_H, &px[i], &py[i]);
+
+	for (s = 0; s < MAX_POINTS; s++) {
+		int best = -1, best_d = TRACK_MAX_DIST * TRACK_MAX_DIST;
+
+		trk.slot[s].fresh = 0;
+		trk.slot[s].ended = 0;
+		if (!trk.slot[s].active)
+			continue;
+		for (i = 0; i < n; i++) {
+			int dx = px[i] - trk.slot[s].x, dy = py[i] - trk.slot[s].y;
+
+			if (!taken[i] && dx * dx + dy * dy < best_d) {
+				best = i;
+				best_d = dx * dx + dy * dy;
+			}
+		}
+		if (best < 0) {
+			trk.slot[s].active = 0;
+			trk.slot[s].ended = 1;
+			continue;
+		}
+		taken[best] = 1;
+		trk.slot[s].px = trk.slot[s].x;
+		trk.slot[s].py = trk.slot[s].y;
+		trk.slot[s].x = px[best];
+		trk.slot[s].y = py[best];
+	}
+	for (i = 0; i < n; i++) {
+		if (taken[i])
+			continue;
+		for (s = 0; s < MAX_POINTS && (trk.slot[s].active || trk.slot[s].ended); s++)
+			;
+		if (s == MAX_POINTS)
+			break;
+		trk.slot[s].active = 1;
+		trk.slot[s].fresh = 1;
+		trk.slot[s].id = trk.next_id++ & 0xffff;
+		trk.slot[s].x = trk.slot[s].px = px[i];
+		trk.slot[s].y = trk.slot[s].py = py[i];
+	}
+	for (s = 0; s < MAX_POINTS; s++)
+		active += trk.slot[s].active;
+	return active;
+}
+
+static void fb_line(int x0, int y0, int x1, int y1, int radius, uint32_t color)
+{
+	int dx = x1 - x0, dy = y1 - y0;
+	int steps = abs(dx) > abs(dy) ? abs(dx) : abs(dy);
+	int k;
+
+	steps = steps / (radius > 1 ? radius / 2 : 1) + 1;
+	for (k = 0; k <= steps; k++)
+		fb_dot(x0 + dx * k / steps, y0 + dy * k / steps, radius, color);
+}
+
+static void paint(int active)
 {
 	/* a8b8g8r8 in memory order R, G, B, A */
 	static const uint32_t colors[] = {
 		0xff0000ff, 0xff00ff00, 0xffff0000, 0xff00ffff, 0xffff00ff,
 		0xffffff00, 0xffffffff, 0xff0080ff, 0xff8000ff, 0xff80ff00,
 	};
-	int i;
+	static int prev_active;
+	static double last_move;
+	int s, moved = 0;
 
-	for (i = 0; i < n; i++) {
-		int x, y;
-
-		to_screen(&pts[i], fb.width, fb.height, &x, &y);
-		fb_dot(x, y, 10, colors[i % 10]);
+	/* three fingers wipe the canvas */
+	if (active >= 3 && prev_active < 3) {
+		fb_clear();
+		printf("three fingers: canvas cleared\n");
 	}
+	prev_active = active;
+
+	for (s = 0; s < MAX_POINTS; s++) {
+		uint32_t color = colors[trk.slot[s].id % 10];
+		int x = trk.slot[s].x * (int)fb.width / SCREEN_W;
+		int y = trk.slot[s].y * (int)fb.height / SCREEN_H;
+
+		if (trk.slot[s].ended) {
+			printf("up   #%d at %4d,%4d\n", trk.slot[s].id,
+			       trk.slot[s].x, trk.slot[s].y);
+			continue;
+		}
+		if (!trk.slot[s].active)
+			continue;
+		if (trk.slot[s].fresh) {
+			printf("down #%d at %4d,%4d (%d finger%s)\n",
+			       trk.slot[s].id, trk.slot[s].x, trk.slot[s].y,
+			       active, active > 1 ? "s" : "");
+		} else {
+			moved = 1;
+		}
+		if (!fb.mem || active >= 3)
+			continue;
+		if (trk.slot[s].fresh)
+			fb_dot(x, y, 14, color);
+		else
+			fb_line(trk.slot[s].px * (int)fb.width / SCREEN_W,
+				trk.slot[s].py * (int)fb.height / SCREEN_H,
+				x, y, 6, color);
+	}
+	if (moved && now_s() - last_move > 0.25) {
+		printf("move");
+		for (s = 0; s < MAX_POINTS; s++)
+			if (trk.slot[s].active)
+				printf("  #%d %4d,%4d", trk.slot[s].id,
+				       trk.slot[s].x, trk.slot[s].y);
+		putchar('\n');
+		last_move = now_s();
+	}
+	fflush(stdout);
 }
 
 static struct {
 	int fd;
-	int next_id;
 	int reported_touch;
-	struct {
-		int active, id, x, y;
-	} slot[MAX_POINTS];
 } ui = { .fd = -1 };
 
 static void ui_abs(int code, int min, int max)
@@ -421,70 +558,32 @@ static void ui_emit(int type, int code, int value)
 		st.ui_write_errors++;
 }
 
-/* match this frame's contacts to the slots of the previous one */
-static void ui_report(const struct point *pts, int n)
+static void ui_report(int active)
 {
-	int px[MAX_POINTS], py[MAX_POINTS], taken[MAX_POINTS] = { 0 };
-	int i, s, first = -1, touching = 0;
-
-	for (i = 0; i < n; i++)
-		to_screen(&pts[i], SCREEN_W, SCREEN_H, &px[i], &py[i]);
+	int s, first = -1;
 
 	for (s = 0; s < MAX_POINTS; s++) {
-		int best = -1, best_d = TRACK_MAX_DIST * TRACK_MAX_DIST;
-
-		if (!ui.slot[s].active)
+		if (!trk.slot[s].active && !trk.slot[s].ended)
 			continue;
-		for (i = 0; i < n; i++) {
-			int dx = px[i] - ui.slot[s].x, dy = py[i] - ui.slot[s].y;
-
-			if (!taken[i] && dx * dx + dy * dy < best_d) {
-				best = i;
-				best_d = dx * dx + dy * dy;
-			}
-		}
 		ui_emit(EV_ABS, ABS_MT_SLOT, s);
-		if (best < 0) {
-			ui.slot[s].active = 0;
+		if (trk.slot[s].ended) {
 			ui_emit(EV_ABS, ABS_MT_TRACKING_ID, -1);
 			continue;
 		}
-		taken[best] = 1;
-		ui.slot[s].x = px[best];
-		ui.slot[s].y = py[best];
-		ui_emit(EV_ABS, ABS_MT_POSITION_X, px[best]);
-		ui_emit(EV_ABS, ABS_MT_POSITION_Y, py[best]);
-	}
-	for (i = 0; i < n; i++) {
-		if (taken[i])
-			continue;
-		for (s = 0; s < MAX_POINTS && ui.slot[s].active; s++)
-			;
-		if (s == MAX_POINTS)
-			break;
-		ui.slot[s].active = 1;
-		ui.slot[s].id = ui.next_id++ & 0xffff;
-		ui.slot[s].x = px[i];
-		ui.slot[s].y = py[i];
-		ui_emit(EV_ABS, ABS_MT_SLOT, s);
-		ui_emit(EV_ABS, ABS_MT_TRACKING_ID, ui.slot[s].id);
-		ui_emit(EV_ABS, ABS_MT_POSITION_X, px[i]);
-		ui_emit(EV_ABS, ABS_MT_POSITION_Y, py[i]);
-	}
-	for (s = 0; s < MAX_POINTS; s++) {
-		if (!ui.slot[s].active)
-			continue;
-		touching++;
+		if (trk.slot[s].fresh)
+			ui_emit(EV_ABS, ABS_MT_TRACKING_ID, trk.slot[s].id);
+		ui_emit(EV_ABS, ABS_MT_POSITION_X, trk.slot[s].x);
+		ui_emit(EV_ABS, ABS_MT_POSITION_Y, trk.slot[s].y);
 		if (first < 0)
 			first = s;
 	}
-	if (touching) {
-		ui_emit(EV_ABS, ABS_X, ui.slot[first].x);
-		ui_emit(EV_ABS, ABS_Y, ui.slot[first].y);
+	if (first >= 0) {
+		ui_emit(EV_ABS, ABS_X, trk.slot[first].x);
+		ui_emit(EV_ABS, ABS_Y, trk.slot[first].y);
 	}
-	if (!!touching != ui.reported_touch) {
-		ui_emit(EV_KEY, BTN_TOUCH, !!touching);
-		ui.reported_touch = !!touching;
+	if (!!active != ui.reported_touch) {
+		ui_emit(EV_KEY, BTN_TOUCH, !!active);
+		ui.reported_touch = !!active;
 	}
 	ui_emit(EV_SYN, SYN_REPORT, 0);
 }
@@ -579,10 +678,12 @@ static void handle_frame(const uint8_t *frame, size_t len)
 		struct point pts[MAX_POINTS];
 		int i, count = find_points(pts);
 
-		if (opt.mode == MODE_PAINT && fb.mem)
-			paint(pts, count);
+		if (opt.mode == MODE_PAINT) {
+			paint(track(pts, count));
+			return;
+		}
 		if (opt.mode == MODE_INPUT) {
-			ui_report(pts, count);
+			ui_report(track(pts, count));
 			return;
 		}
 		if (count && now_s() - last_print > 0.1) {
@@ -625,7 +726,7 @@ int main(int argc, char **argv)
 	size_t have = 0;
 	double start, last_stats;
 	const char *replay;
-	int fd, i, ret;
+	int fd, i, ret, interactive;
 
 	for (i = 1; i < argc; i++) {
 		if (!strcmp(argv[i], "stats"))
@@ -695,17 +796,38 @@ int main(int argc, char **argv)
 		return 1;
 	}
 	fprintf(stderr, "capturing; keep fingers off the screen for the reference\n");
+	if (opt.mode == MODE_PAINT)
+		fprintf(stderr, "paint: draw on the screen for %ds; three fingers or "
+			"\"c\" + Enter clear, \"q\" + Enter stops\n", opt.seconds);
+	interactive = opt.mode == MODE_PAINT && isatty(STDIN_FILENO);
 
 	start = last_stats = now_s();
 	while (running && (!opt.seconds || now_s() - start < opt.seconds)) {
-		struct pollfd pfd = { .fd = fd, .events = POLLIN };
+		struct pollfd pfd[2] = {
+			{ .fd = fd, .events = POLLIN },
+			{ .fd = interactive ? STDIN_FILENO : -1, .events = POLLIN },
+		};
 		ssize_t n;
 		size_t off = 0;
 
-		ret = poll(&pfd, 1, 200);
+		ret = poll(pfd, 2, 200);
 		if (ret < 0 && errno != EINTR)
 			break;
-		if (ret > 0 && (pfd.revents & POLLIN)) {
+		if (ret > 0 && (pfd[1].revents & (POLLIN | POLLHUP))) {
+			char line[64];
+
+			n = read(STDIN_FILENO, line, sizeof(line));
+			if (n <= 0)
+				interactive = 0;
+			else if (line[0] == 'q')
+				running = 0;
+			else if (line[0] == 'c') {
+				fb_clear();
+				printf("canvas cleared\n");
+				fflush(stdout);
+			}
+		}
+		if (ret > 0 && (pfd[0].revents & POLLIN)) {
 			n = read(fd, buf + have, sizeof(buf) - have);
 			if (n > 0)
 				have += n;
@@ -744,6 +866,10 @@ int main(int argc, char **argv)
 	if (ui.fd >= 0) {
 		ioctl(ui.fd, UI_DEV_DESTROY);
 		close(ui.fd);
+	}
+	if (fb.mem) {
+		fb_close();
+		fprintf(stderr, "paint: screen restored\n");
 	}
 	print_stats(now_s() - start);
 	return st.csum_ok ? 0 : 3;

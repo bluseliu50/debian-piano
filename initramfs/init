@@ -40,6 +40,12 @@ if mount -t pstore pstore /sys/fs/pstore 2>/dev/null; then
   fi
 fi
 
+# --- apps SMMU: let QUP1 GPI DMA through ---------------------------------------
+# ABL leaves the apps SMMU enabled with unmatched streams faulting; the touch
+# SPI DMA (streams 0xb6/0xa3) would reset the SoC on its first transfer.
+# Match them now, before anything can load the SPI stack.
+piano-qup-smmu > /run/qup-smmu.log 2>&1 || say "WARN piano-qup-smmu failed (see /run/qup-smmu.log)"
+
 # --- framebuffer beacon (bounded) -------------------------------------------
 # Alternate white/black fills of the whole splash framebuffer so userspace
 # progress is visible with zero driver dependencies: /dev/fb0 when simpledrm
