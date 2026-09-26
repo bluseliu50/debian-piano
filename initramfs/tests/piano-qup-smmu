@@ -31,7 +31,9 @@ scr0=$(rd 0x0)
 idr0=$(rd 0x20)
 nsmr=$((idr0 & 0xff))
 [ $((scr0 & 1)) -eq 0 ] || { echo "SMMU disabled (sCR0.CLIENTPD), nothing to do"; exit 0; }
-[ "$nsmr" -gt 0 ] && [ "$nsmr" -le 128 ] || die "unexpected NUMSMRG $nsmr (IDR0=$idr0)"
+if [ "$nsmr" -le 0 ] || [ "$nsmr" -gt 128 ]; then
+    die "unexpected NUMSMRG $nsmr (IDR0=$idr0)"
+fi
 printf 'sCR0=0x%08x USFCFG=%d stream-match groups=%d\n' "$scr0" $(((scr0 >> 10) & 1)) "$nsmr"
 
 # smr_match SID -> index of a valid SMR covering SID, or nothing

@@ -34,7 +34,9 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-[ -n "$UAPI" ] && [ -n "$OUTPUT" ] || die "--uapi and --output are required"
+if [ -z "$UAPI" ] || [ -z "$OUTPUT" ]; then
+    die "--uapi and --output are required"
+fi
 [ -f "$UAPI/include/linux/fb.h" ] || die "no UAPI headers at $UAPI/include"
 for f in usr/lib/crt1.o usr/lib/crti.o usr/lib/crtn.o usr/lib/libc.a \
          usr/lib/libclang_rt.builtins-aarch64.a usr/include/stdio.h; do
