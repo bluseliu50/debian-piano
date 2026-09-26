@@ -209,6 +209,8 @@ say "debug environment up: NCM 10.42.0.2, ssh root@10.42.0.2"
   modprobe phy_qcom_qmp_pcie >> "$LOG" 2>&1
   sleep 1
   ls -l /sys/bus/platform/devices/1c06000.phy/driver >> "$LOG" 2>&1
+  # prove the SMMU stream matches exist BEFORE any pcie/ath12k DMA
+  piano-qup-smmu --check 0xb6 0xa3 0x1400 0x1401 0x436 0x423 >> "$LOG" 2>&1
 
   stage 0b "pwrseq-qcom-wcn + pci-pwrctrl-pwrseq (combo PMU + WLAN power)"
   modprobe pwrseq_qcom_wcn >> "$LOG" 2>&1
