@@ -200,37 +200,42 @@ say "debug environment up: NCM 10.42.0.2, ssh root@10.42.0.2"
   }
   sleep 8
 
-  stage 0 "pinctrl-sm8750 (TLMM: uart14/pcie pin consumers release)"
-  modprobe pinctrl_sm8750 >> "$LOG" 2>&1
-  sleep 2
-
-  stage 1 "pwrseq-qcom-wcn (combo PMU pwrseq provider)"
-  modprobe pwrseq_qcom_wcn >> "$LOG" 2>&1
+  # Round 5: load every supplier pcie needs BEFORE the TLMM module —
+  # pcie's deferred probe re-runs the moment TLMM registers, and that
+  # retry must find the phy provider, the pwrseq unit and the pwrctrl
+  # bridge all bound, otherwise it silently defers again (field rounds
+  # 3/4: -ENODEV when the phy provider was absent, then silence).
+  stage 0a "phy-qcom-qmp-pcie (QMP provider)"
+  modprobe phy_qcom_qmp_pcie >> "$LOG" 2>&1
   sleep 1
+  ls -l /sys/bus/platform/devices/1c06000.phy/driver >> "$LOG" 2>&1
 
-  stage 2 "hci_uart (BT power-on + firmware over uart14)"
+  stage 0b "pwrseq-qcom-wcn + pci-pwrctrl-pwrseq (combo PMU + WLAN power)"
+  modprobe pwrseq_qcom_wcn >> "$LOG" 2>&1
+  modprobe pci_pwrctrl_pwrseq >> "$LOG" 2>&1
+  sleep 1
+  dmesg | grep -iE 'pwrseq|pwrctrl' | tail -10 >> "$LOG" 2>&1
+
+  stage 0c "pinctrl-sm8750 (TLMM last: fires the pcie/uart14 probe wave)"
+  modprobe pinctrl_sm8750 >> "$LOG" 2>&1
+  sleep 4
+  dmesg | grep -iE 'qcom-pcie|PCI host|phy-qcom' | tail -15 >> "$LOG" 2>&1
+
+  stage 1 "hci_uart (BT power-on + firmware over uart14)"
   modprobe hci_uart >> "$LOG" 2>&1
-  sleep 8
+  sleep 10
   ls /sys/class/bluetooth/ >> "$LOG" 2>&1
   [ -e /sys/class/bluetooth/hci0/address ] && \
     echo "hci0 address: $(cat /sys/class/bluetooth/hci0/address)" >> "$LOG"
 
-  stage 3 "pci-pwrctrl-pwrseq (WLAN power via wifi@0)"
-  modprobe pci_pwrctrl_pwrseq >> "$LOG" 2>&1
-  sleep 2
-
-  stage 4 "phy-qcom-qmp-pcie + pcie-qcom (link train)"
-  modprobe phy_qcom_qmp_pcie >> "$LOG" 2>&1
-  modprobe pcie_qcom >> "$LOG" 2>&1
-  sleep 6
-  for d in /sys/bus/pci/devices/*; do
-    [ -r "$d/vendor" ] && echo "pci $(basename "$d"): $(cat "$d/vendor"):$(cat "$d/device")" >> "$LOG"
-  done
-
-  stage 5 "ath12k_wifi7 (firmware + wiphy)"
+  stage 2 "ath12k_wifi7 (firmware + wiphy)"
   modprobe ath12k_wifi7 >> "$LOG" 2>&1
   sleep 10
   ls /sys/class/ieee80211/ >> "$LOG" 2>&1
+  for d in /sys/bus/pci/devices/*; do
+    [ -r "$d/vendor" ] && echo "pci $(basename "$d"): $(cat "$d/vendor"):$(cat "$d/device")" >> "$LOG"
+  done
+  iw dev >> "$LOG" 2>&1
 
   stage 6 "report"
   dmesg | grep -iE 'pwrseq|pwrctrl|pcie|qmp|ath12k|mhi|bluetooth|hci|geni|898000' | tail -60 >> "$LOG" 2>&1
