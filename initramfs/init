@@ -239,7 +239,16 @@ say "debug environment up: NCM 10.42.0.2, ssh root@10.42.0.2"
   # deferred the pwrseq on both field rounds so far.
   ls /sys/bus/spmi/devices >> "$LOG" 2>&1
   ls /sys/bus/platform/devices 2>/dev/null | grep -iE 'c42d000|8800|spmi' >> "$LOG" 2>&1
-  dmesg | grep -iE 'spmi|pmic.arb|pmic_gpio|gpiochip' | tail -25 >> "$LOG" 2>&1
+  echo "--- gpio pinctrl@8800 driver bindings:" >> "$LOG"
+  for d in /sys/bus/platform/devices/*pinctrl@8800; do
+    [ -e "$d" ] || continue
+    if [ -L "$d/driver" ]; then echo "$d -> $(readlink "$d/driver")" >> "$LOG"; else echo "$d -> NO DRIVER" >> "$LOG"; fi
+  done
+  echo "--- gpiochips:" >> "$LOG"
+  ls /sys/class/gpio/ >> "$LOG" 2>&1
+  echo "--- SPMI arbiter version register (0xc400000) via devmem:" >> "$LOG"
+  devmem 0xc400000 32 >> "$LOG" 2>&1
+  dmesg | grep -iE 'spmi|pmic.arb|pmic_gpio|pmic-gpio|pinctrl-spmi|arbiter version|gpiochip' | tail -30 >> "$LOG" 2>&1
   echo "piano-wlanbt: stages complete (see /run/wlanbt-stages.log)" > /dev/kmsg
 ) &
 
