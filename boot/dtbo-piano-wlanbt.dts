@@ -382,10 +382,16 @@
 			pinctrl-names = "default";
 			pinctrl-0 = <&pcie0_default_ml>;
 			pinctrl-1;
-			/* vendor single-cell interconnect args and supply
-			 * phandles into never-binding downstream nodes */
-			interconnects;
-			interconnect-names;
+			/* Round 9: the -61 was qcom_pcie_icc_init's
+			 * devm_of_icc_get("pcie-mem") returning -ENODEV for
+			 * the neutered property — give pcie0 the upstream
+			 * 2-cell paths (pcie_noc is mainlined in
+			 * fragment@238, same treatment as the other NoCs). */
+			interconnects = <&pcie_noc MASTER_PCIE_0 QCOM_ICC_TAG_ALWAYS
+					 &mc_virt SLAVE_EBI1 QCOM_ICC_TAG_ALWAYS>,
+					<&gem_noc MASTER_APPSS_PROC QCOM_ICC_TAG_ALWAYS
+					 &cnoc_main SLAVE_PCIE_0 QCOM_ICC_TAG_ALWAYS>;
+			interconnect-names = "pcie-mem", "cpu-pcie";
 			gdsc-phy-vdd-supply;
 			qcom,bw-scale;
 			/* downstream msi/iommu maps (see header comment) */
@@ -486,6 +492,22 @@
 		__overlay__ {
 			interrupts = <GIC_SPI 461 IRQ_TYPE_LEVEL_HIGH>;
 			interrupts-extended;
+		};
+	};
+
+	/*
+	 * Round 9: pcie_noc mainline binding — qcom_pcie_icc_init resolves
+	 * the pcie-mem/cpu-pcie paths through it (same treatment as the
+	 * other NoCs in the milestone-1 base; the vendor clocks and the
+	 * downstream pcie_crm voter phandle are replaced by the HLOS one).
+	 */
+	fragment@238 {
+		target = <&pcie_noc>;
+		__overlay__ {
+			compatible = "qcom,sm8750-pcie-noc";
+			#interconnect-cells = <2>;
+			qcom,bcm-voter-names = "hlos";
+			qcom,bcm-voters = <&apps_bcm_voter_ml>;
 		};
 	};
 
