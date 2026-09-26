@@ -220,6 +220,17 @@ say "debug environment up: NCM 10.42.0.2, ssh root@10.42.0.2"
   modprobe pinctrl_sm8750 >> "$LOG" 2>&1
   sleep 4
   dmesg | grep -iE 'qcom-pcie|PCI host|phy-qcom' | tail -15 >> "$LOG" 2>&1
+  # runtime-tree evidence for the -61 (parse_ports finds no port child)
+  echo "--- runtime pcie node:" >> "$LOG"
+  ls /proc/device-tree/soc/pcie@1c00000/ >> "$LOG" 2>&1
+  echo "--- runtime pcie0_rp node:" >> "$LOG"
+  ls /proc/device-tree/soc/pcie@1c00000/pcie0_rp/ >> "$LOG" 2>&1
+  od -c /proc/device-tree/soc/pcie@1c00000/pcie0_rp/device_type >> "$LOG" 2>&1
+  od -An -tx4 /proc/device-tree/soc/pcie@1c00000/pcie0_rp/phys >> "$LOG" 2>&1
+  # one manual rebind attempt with everything loaded
+  echo 1c00000.pcie > /sys/bus/platform/drivers/qcom-pcie/bind 2>> "$LOG" || true
+  sleep 3
+  dmesg | grep -iE 'qcom-pcie|PCI host' | tail -10 >> "$LOG" 2>&1
 
   stage 1 "hci_uart (BT power-on + firmware over uart14)"
   modprobe hci_uart >> "$LOG" 2>&1

@@ -162,8 +162,9 @@
 				pinctrl-0 = <&wlan_en_ml>;
 
 				wlan-enable-gpios = <&piano_tlmm_ml 16 GPIO_ACTIVE_HIGH>;
-			/* Round 4 (field log 3): neutered — see fragment@237 */
-			bt-enable-gpios;
+			/* Round 6: restored — the qcom-spmi-gpio chips are all
+			 * bound (field log 5); the earlier defer is moot. */
+			bt-enable-gpios = <&pm8550ve_f_gpios 3 GPIO_ACTIVE_HIGH>;
 
 				vdd-supply = <&vreg_s5f_0p85_ml>;
 				vddio-supply = <&vreg_l3f_1p8_ml>;
@@ -482,19 +483,4 @@
 		};
 	};
 
-	/*
-	 * Round 4 (field log 3): the pm8550ve_f gpiochip never registers
-	 * (SPMI chain partially broken; hard evidence is being collected in
-	 * the stage log).  The pwrseq driver treats bt-enable as OPTIONAL —
-	 * with the property neutered the PMU probe completes and the WLAN
-	 * half (WLAN_EN from the mainline TLMM) powers up normally.
-	 * Bluetooth stays unpowered until the SPMI gpiochip works; restore
-	 * the property in fragment@230 afterwards.
-	 */
-	fragment@237 {
-		target-path = "/wcn7850-pmu";
-		__overlay__ {
-			bt-enable-gpios;
-		};
-	};
 };
