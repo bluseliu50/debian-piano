@@ -504,10 +504,12 @@
 	fragment@238 {
 		target = <&pcie_noc>;
 		__overlay__ {
-			compatible = "qcom,sm8750-pcie-noc";
+			compatible = "qcom,sm8750-pcie-anoc";
 			#interconnect-cells = <2>;
 			qcom,bcm-voter-names = "hlos";
 			qcom,bcm-voters = <&apps_bcm_voter_ml>;
+			clocks = <&gcc GCC_AGGRE_UFS_PHY_AXI_CLK>,
+				 <&gcc GCC_AGGRE_USB3_PRIM_AXI_CLK>;
 		};
 	};
 
