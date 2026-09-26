@@ -18,19 +18,25 @@
  *
  * checksum == -(sum of the crc_len*2 u16 words from +20).
  *
- * This is a bring-up viewer, not a touch service: the reference is the
- * median of the first frames (keep fingers off while it starts) and
- * contacts are plain local maxima with a 3x3 centroid.
+ * This is a bring-up tool, not a tuned touch service: the reference is the
+ * median of the first frames (keep fingers off while it starts) and then
+ * follows slow drift while nothing touches; contacts are plain local maxima
+ * with a 3x3 centroid, tracked frame to frame by nearest distance.
+ *
+ * Screen orientation (landscape 3200x2136 console, measured on piano):
+ * sensor columns run along screen x, sensor rows along screen y with y
+ * reversed. The --swap-xy/--flip-x/--flip-y options toggle from there.
  *
  * Usage: piano-touch-view [MODE] [options]
- *   MODE: stats (default) | map | points | paint | dump
+ *   MODE: stats (default) | map | points | paint | dump | input
+ *         input creates a multitouch evdev device through /dev/uinput
  *   --seconds N      stop after N seconds (default 30, 0 = forever)
  *   --type N         matrix frame type (default: most common in the
  *                    first frames, pen types 6/7/9/0x1d excluded)
  *   --threshold T    delta counted as touch (default 200)
  *   --reference N    reference frames (default 32)
  *   --invert         touches lower the value (default: raise)
- *   --swap-xy --flip-x --flip-y   paint orientation
+ *   --swap-xy --flip-x --flip-y   toggle the orientation
  *
  * PIANO_THP_STREAM=<file> replays a captured stream instead of the proc
  * interface (capture control is left alone then).
@@ -49,6 +55,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <linux/fb.h>
+#include <linux/uinput.h>
 
 #define STREAM_PATH "/proc/nvt_thp_stream"
 #define CONTROL_PATH "/proc/nvt_thp_raw"
@@ -60,8 +67,13 @@
 #define MAX_REF 128
 #define MAX_POINTS 10
 #define TYPE_PROBE_FRAMES 16
+#define SCREEN_W 3200
+#define SCREEN_H 2136
+/* a contact moving further than this between frames is a new finger */
+#define TRACK_MAX_DIST 400
 
-enum mode { MODE_STATS, MODE_MAP, MODE_POINTS, MODE_PAINT, MODE_DUMP };
+enum mode { MODE_STATS, MODE_MAP, MODE_POINTS, MODE_PAINT, MODE_DUMP,
+	    MODE_INPUT };
 
 static volatile sig_atomic_t running = 1;
 
@@ -73,7 +85,7 @@ static struct {
 	int invert;
 	int swap_xy, flip_x, flip_y;
 	int type;
-} opt = { MODE_STATS, 30, 200, 32, 0, 0, 0, 0, -1 };
+} opt = { MODE_STATS, 30, 200, 32, 0, 0, 0, 1, -1 };
 
 static struct {
 	unsigned long records, bad_magic, flag_valid, csum_ok, csum_bad;
@@ -81,6 +93,7 @@ static struct {
 	int rows, cols;
 	unsigned int last_frame_no;
 	int max_delta;
+	unsigned long ui_write_errors;
 } st;
 
 static int16_t ref_samples[MAX_REF][MAX_NODES];
@@ -298,6 +311,33 @@ static void fb_dot(int x, int y, int radius, uint32_t color)
 		}
 }
 
+/* sensor centroid -> screen pixel */
+static void to_screen(const struct point *pt, int width, int height,
+		      int *x, int *y)
+{
+	double u = pt->x / st.cols, v = pt->y / st.rows, t;
+
+	if (opt.swap_xy) {
+		t = u;
+		u = v;
+		v = t;
+	}
+	if (opt.flip_x)
+		u = 1.0 - u;
+	if (opt.flip_y)
+		v = 1.0 - v;
+	*x = (int)(u * width);
+	*y = (int)(v * height);
+	if (*x < 0)
+		*x = 0;
+	if (*x >= width)
+		*x = width - 1;
+	if (*y < 0)
+		*y = 0;
+	if (*y >= height)
+		*y = height - 1;
+}
+
 static void paint(const struct point *pts, int n)
 {
 	/* a8b8g8r8 in memory order R, G, B, A */
@@ -308,20 +348,145 @@ static void paint(const struct point *pts, int n)
 	int i;
 
 	for (i = 0; i < n; i++) {
-		double u = pts[i].x / st.cols, v = pts[i].y / st.rows, t;
+		int x, y;
 
-		if (opt.swap_xy) {
-			t = u;
-			u = v;
-			v = t;
-		}
-		if (opt.flip_x)
-			u = 1.0 - u;
-		if (opt.flip_y)
-			v = 1.0 - v;
-		fb_dot((int)(u * fb.width), (int)(v * fb.height), 10,
-		       colors[i % 10]);
+		to_screen(&pts[i], fb.width, fb.height, &x, &y);
+		fb_dot(x, y, 10, colors[i % 10]);
 	}
+}
+
+static struct {
+	int fd;
+	int next_id;
+	int reported_touch;
+	struct {
+		int active, id, x, y;
+	} slot[MAX_POINTS];
+} ui = { .fd = -1 };
+
+static void ui_abs(int code, int min, int max)
+{
+	struct uinput_abs_setup a = { .code = code };
+
+	a.absinfo.minimum = min;
+	a.absinfo.maximum = max;
+	if (ioctl(ui.fd, UI_ABS_SETUP, &a))
+		perror("UI_ABS_SETUP");
+}
+
+static int ui_open(void)
+{
+	struct uinput_setup us = { 0 };
+
+	ui.fd = open("/dev/uinput", O_WRONLY | O_NONBLOCK | O_CLOEXEC);
+	if (ui.fd < 0)
+		return -errno;
+	ioctl(ui.fd, UI_SET_EVBIT, EV_SYN);
+	ioctl(ui.fd, UI_SET_EVBIT, EV_KEY);
+	ioctl(ui.fd, UI_SET_EVBIT, EV_ABS);
+	ioctl(ui.fd, UI_SET_KEYBIT, BTN_TOUCH);
+	ioctl(ui.fd, UI_SET_PROPBIT, INPUT_PROP_DIRECT);
+	ioctl(ui.fd, UI_SET_ABSBIT, ABS_X);
+	ioctl(ui.fd, UI_SET_ABSBIT, ABS_Y);
+	ioctl(ui.fd, UI_SET_ABSBIT, ABS_MT_SLOT);
+	ioctl(ui.fd, UI_SET_ABSBIT, ABS_MT_TRACKING_ID);
+	ioctl(ui.fd, UI_SET_ABSBIT, ABS_MT_POSITION_X);
+	ioctl(ui.fd, UI_SET_ABSBIT, ABS_MT_POSITION_Y);
+	ui_abs(ABS_X, 0, SCREEN_W - 1);
+	ui_abs(ABS_Y, 0, SCREEN_H - 1);
+	ui_abs(ABS_MT_SLOT, 0, MAX_POINTS - 1);
+	ui_abs(ABS_MT_TRACKING_ID, 0, 0xffff);
+	ui_abs(ABS_MT_POSITION_X, 0, SCREEN_W - 1);
+	ui_abs(ABS_MT_POSITION_Y, 0, SCREEN_H - 1);
+	us.id.bustype = BUS_SPI;
+	us.id.vendor = 0x0603;	/* Novatek */
+	us.id.product = 0x6532;
+	us.id.version = 1;
+	snprintf(us.name, sizeof(us.name), "piano NT36532 THP touchscreen");
+	if (ioctl(ui.fd, UI_DEV_SETUP, &us) || ioctl(ui.fd, UI_DEV_CREATE)) {
+		int ret = -errno;
+
+		close(ui.fd);
+		ui.fd = -1;
+		return ret;
+	}
+	return 0;
+}
+
+static void ui_emit(int type, int code, int value)
+{
+	struct input_event ev = { .type = type, .code = code, .value = value };
+
+	if (write(ui.fd, &ev, sizeof(ev)) != sizeof(ev))
+		st.ui_write_errors++;
+}
+
+/* match this frame's contacts to the slots of the previous one */
+static void ui_report(const struct point *pts, int n)
+{
+	int px[MAX_POINTS], py[MAX_POINTS], taken[MAX_POINTS] = { 0 };
+	int i, s, first = -1, touching = 0;
+
+	for (i = 0; i < n; i++)
+		to_screen(&pts[i], SCREEN_W, SCREEN_H, &px[i], &py[i]);
+
+	for (s = 0; s < MAX_POINTS; s++) {
+		int best = -1, best_d = TRACK_MAX_DIST * TRACK_MAX_DIST;
+
+		if (!ui.slot[s].active)
+			continue;
+		for (i = 0; i < n; i++) {
+			int dx = px[i] - ui.slot[s].x, dy = py[i] - ui.slot[s].y;
+
+			if (!taken[i] && dx * dx + dy * dy < best_d) {
+				best = i;
+				best_d = dx * dx + dy * dy;
+			}
+		}
+		ui_emit(EV_ABS, ABS_MT_SLOT, s);
+		if (best < 0) {
+			ui.slot[s].active = 0;
+			ui_emit(EV_ABS, ABS_MT_TRACKING_ID, -1);
+			continue;
+		}
+		taken[best] = 1;
+		ui.slot[s].x = px[best];
+		ui.slot[s].y = py[best];
+		ui_emit(EV_ABS, ABS_MT_POSITION_X, px[best]);
+		ui_emit(EV_ABS, ABS_MT_POSITION_Y, py[best]);
+	}
+	for (i = 0; i < n; i++) {
+		if (taken[i])
+			continue;
+		for (s = 0; s < MAX_POINTS && ui.slot[s].active; s++)
+			;
+		if (s == MAX_POINTS)
+			break;
+		ui.slot[s].active = 1;
+		ui.slot[s].id = ui.next_id++ & 0xffff;
+		ui.slot[s].x = px[i];
+		ui.slot[s].y = py[i];
+		ui_emit(EV_ABS, ABS_MT_SLOT, s);
+		ui_emit(EV_ABS, ABS_MT_TRACKING_ID, ui.slot[s].id);
+		ui_emit(EV_ABS, ABS_MT_POSITION_X, px[i]);
+		ui_emit(EV_ABS, ABS_MT_POSITION_Y, py[i]);
+	}
+	for (s = 0; s < MAX_POINTS; s++) {
+		if (!ui.slot[s].active)
+			continue;
+		touching++;
+		if (first < 0)
+			first = s;
+	}
+	if (touching) {
+		ui_emit(EV_ABS, ABS_X, ui.slot[first].x);
+		ui_emit(EV_ABS, ABS_Y, ui.slot[first].y);
+	}
+	if (!!touching != ui.reported_touch) {
+		ui_emit(EV_KEY, BTN_TOUCH, !!touching);
+		ui.reported_touch = !!touching;
+	}
+	ui_emit(EV_SYN, SYN_REPORT, 0);
 }
 
 static void handle_frame(const uint8_t *frame, size_t len)
@@ -398,18 +563,28 @@ static void handle_frame(const uint8_t *frame, size_t len)
 		if (delta[n] > st.max_delta)
 			st.max_delta = delta[n];
 	}
+	/* follow slow baseline drift while nothing is near the threshold */
+	if (st.max_delta < opt.threshold / 2)
+		for (n = 0; n < (int)nodes; n++)
+			reference[n] += ((int16_t)le16(p + 64 + n * 2) -
+					 reference[n]) / 8;
 
 	if (opt.mode == MODE_MAP) {
 		if (now_s() - last_print > 0.2) {
 			print_map();
 			last_print = now_s();
 		}
-	} else if (opt.mode == MODE_POINTS || opt.mode == MODE_PAINT) {
+	} else if (opt.mode == MODE_POINTS || opt.mode == MODE_PAINT ||
+		   opt.mode == MODE_INPUT) {
 		struct point pts[MAX_POINTS];
 		int i, count = find_points(pts);
 
 		if (opt.mode == MODE_PAINT && fb.mem)
 			paint(pts, count);
+		if (opt.mode == MODE_INPUT) {
+			ui_report(pts, count);
+			return;
+		}
 		if (count && now_s() - last_print > 0.1) {
 			printf("frame %5u:", st.last_frame_no);
 			for (i = 0; i < count; i++)
@@ -438,7 +613,7 @@ static void print_stats(double elapsed)
 
 static void usage(void)
 {
-	fputs("usage: piano-touch-view [stats|map|points|paint|dump] [--seconds N]\n"
+	fputs("usage: piano-touch-view [stats|map|points|paint|dump|input] [--seconds N]\n"
 	      "       [--type N] [--threshold T] [--reference N] [--invert]\n"
 	      "       [--swap-xy] [--flip-x] [--flip-y]\n", stderr);
 	exit(2);
@@ -463,6 +638,8 @@ int main(int argc, char **argv)
 			opt.mode = MODE_PAINT;
 		else if (!strcmp(argv[i], "dump"))
 			opt.mode = MODE_DUMP;
+		else if (!strcmp(argv[i], "input"))
+			opt.mode = MODE_INPUT;
 		else if (!strcmp(argv[i], "--seconds") && i + 1 < argc)
 			opt.seconds = atoi(argv[++i]);
 		else if (!strcmp(argv[i], "--threshold") && i + 1 < argc)
@@ -474,11 +651,11 @@ int main(int argc, char **argv)
 		else if (!strcmp(argv[i], "--invert"))
 			opt.invert = 1;
 		else if (!strcmp(argv[i], "--swap-xy"))
-			opt.swap_xy = 1;
+			opt.swap_xy = !opt.swap_xy;
 		else if (!strcmp(argv[i], "--flip-x"))
-			opt.flip_x = 1;
+			opt.flip_x = !opt.flip_x;
 		else if (!strcmp(argv[i], "--flip-y"))
-			opt.flip_y = 1;
+			opt.flip_y = !opt.flip_y;
 		else
 			usage();
 	}
@@ -494,6 +671,16 @@ int main(int argc, char **argv)
 		ret = fb_open();
 		if (ret)
 			fprintf(stderr, "no framebuffer painting: %s\n", strerror(-ret));
+	}
+	if (opt.mode == MODE_INPUT) {
+		ret = ui_open();
+		if (ret) {
+			fprintf(stderr, "/dev/uinput: %s (modprobe uinput)\n",
+				strerror(-ret));
+			return 1;
+		}
+		fprintf(stderr, "uinput touchscreen created (%dx%d)\n",
+			SCREEN_W, SCREEN_H);
 	}
 
 	replay = getenv("PIANO_THP_STREAM");
@@ -554,6 +741,10 @@ int main(int argc, char **argv)
 	if (!replay)
 		write_control(0);
 	close(fd);
+	if (ui.fd >= 0) {
+		ioctl(ui.fd, UI_DEV_DESTROY);
+		close(ui.fd);
+	}
 	print_stats(now_s() - start);
 	return st.csum_ok ? 0 : 3;
 }

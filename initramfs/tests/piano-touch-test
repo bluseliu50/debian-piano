@@ -3,15 +3,19 @@
 #
 # Usage: piano-touch-test [--stage N | --upto N] [--view MODE] [--seconds N]
 #
-# Stages (default: 0..4, stop at the first failure):
+# Stages (default: 0..5, stop at the first failure):
 #   0  preflight, read only: DT nodes, TLMM pin state (devmem, bounded),
 #      pstore of the previous boot, device tree copy in /run/fdt.dtb
 #   1  load pinctrl-sm8750 (mainline TLMM at 0xf100000, secure GPIOs
 #      excluded by gpio-reserved-ranges)
-#   2  load gpi + spi-geni-qcom; check that GPIO40-43 moved to qup1_se2
+#   2  add the QUP1 GPI/SE stream matches to the apps SMMU (piano-qup-smmu;
+#      without them the first SPI DMA resets the SoC), load gpi +
+#      spi-geni-qcom, check that GPIO40-43 moved to qup1_se2
 #   3  load nt36532e_ts: chip ID, panel ID, firmware download, IRQ
 #   4  stream frames through piano-touch-view (MODE: stats, map, points,
 #      paint, dump; default stats for 10 s)
+#   5  start the uinput touchscreen (piano-touch-view input) in the
+#      background: a multitouch /dev/input/event* until reboot
 #
 # Every stage start is written to /dev/kmsg, so after a hard reset the
 # pstore console of the next boot shows how far this got. Output is also
@@ -21,9 +25,19 @@
 # passed, 2 on usage errors.
 
 FIRST=0
-LAST=4
+LAST=5
 VIEW=stats
 VIEW_SECONDS=10
+
+LOG=/run/touch-test.log
+
+# Mirror everything into $LOG (busybox ash: no process substitution); this
+# must run before the arguments are shifted away.
+if [ -z "${PIANO_TOUCH_TEST_LOGGED-}" ]; then
+    { PIANO_TOUCH_TEST_LOGGED=1 "$0" "$@" 2>&1; echo $? > /run/touch-test.rc; } \
+        | tee -a "$LOG"
+    exit "$(cat /run/touch-test.rc)"
+fi
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -31,7 +45,7 @@ while [ $# -gt 0 ]; do
         --upto)    LAST=${2-}; shift 2 ;;
         --view)    VIEW=${2-}; shift 2 ;;
         --seconds) VIEW_SECONDS=${2-}; shift 2 ;;
-        -h|--help) sed -n '2,23p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
         *) echo "piano-touch-test: unknown option: $1" >&2; exit 2 ;;
     esac
 done
@@ -39,7 +53,6 @@ for n in "$FIRST" "$LAST" "$VIEW_SECONDS"; do
     case "$n" in ''|*[!0-9]*) echo "piano-touch-test: numeric argument expected" >&2; exit 2 ;; esac
 done
 
-LOG=/run/touch-test.log
 KVER=$(uname -r)
 DT=/proc/device-tree
 SPI_DT=$DT/soc/qcom,qupv3_1_geni_se@ac0000/spi@a88000
@@ -52,12 +65,6 @@ TLMM_BASE=$((0x0f100000))
 TLMM_END=$((0x0f202000))
 RESERVED=" 36 37 38 39 48 49 50 51 74 "
 
-# Mirror everything into $LOG (busybox ash: no process substitution).
-if [ -z "${PIANO_TOUCH_TEST_LOGGED-}" ]; then
-    { PIANO_TOUCH_TEST_LOGGED=1 "$0" "$@" 2>&1; echo $? > /run/touch-test.rc; } \
-        | tee -a "$LOG"
-    exit "$(cat /run/touch-test.rc)"
-fi
 
 say() { echo "== $*"; echo "piano-touch-test: $*" > /dev/kmsg 2>/dev/null; }
 fail() { echo "FAIL: $*"; echo "piano-touch-test: FAIL $*" > /dev/kmsg 2>/dev/null; exit $((10 + STAGE)); }
@@ -143,7 +150,7 @@ stage0() {
     for f in novatek_nt36532_piano_fw_csot.bin novatek_nt36532_piano_fw_boe.bin; do
         [ -s "/lib/firmware/novatek/$f" ] || fail "missing /lib/firmware/novatek/$f"
     done
-    for m in pinctrl-sm8750 gpi spi-geni-qcom nt36532e_ts; do
+    for m in pinctrl-sm8750 gpi spi-geni-qcom nt36532e_ts uinput; do
         grep -q "/$m.ko:" "/lib/modules/$KVER/modules.dep" 2>/dev/null \
             || fail "module $m not in the image"
     done
@@ -177,8 +184,9 @@ stage1() {
 }
 
 stage2() {
-    say "stage 2: loading gpi + spi-geni-qcom"
+    say "stage 2: apps SMMU stream matches, loading gpi + spi-geni-qcom"
     [ -e "$TLMM_DEV/driver" ] || fail "TLMM not bound; run stage 1 first"
+    piano-qup-smmu || fail "cannot add the QUP1 SMMU stream matches"
     load gpi
     load spi-geni-qcom
     wait_for 5 test -e "$SPI_DEV/driver" || { deferred; fail "a88000.spi did not bind"; }
@@ -232,10 +240,29 @@ stage4() {
     pass
 }
 
+stage5() {
+    say "stage 5: uinput touchscreen"
+    [ -e /proc/nvt_thp_status ] || fail "touch driver not loaded; run stage 3 first"
+    if pidof piano-touch-view > /dev/null; then
+        echo "piano-touch-view already running (pid $(pidof piano-touch-view))"
+    else
+        load uinput
+        echo "keep fingers off the screen for a second (reference)"
+        (trap '' HUP; exec piano-touch-view input --seconds 0 \
+            > /run/touch-input.log 2>&1) &
+        sleep 2
+    fi
+    cat /run/touch-input.log
+    grep -A5 'piano NT36532' /proc/bus/input/devices \
+        || fail "no uinput touchscreen registered"
+    pass "(touchscreen active until reboot; log /run/touch-input.log)"
+}
+
 STAGE=$FIRST
 while [ "$STAGE" -le "$LAST" ]; do
     case "$STAGE" in
         0) stage0 ;; 1) stage1 ;; 2) stage2 ;; 3) stage3 ;; 4) stage4 ;;
+        5) stage5 ;;
         *) echo "piano-touch-test: no stage $STAGE" >&2; exit 2 ;;
     esac
     STAGE=$((STAGE + 1))
