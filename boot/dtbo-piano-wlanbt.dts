@@ -371,6 +371,12 @@
 			resets = <&gcc GCC_PCIE_0_BCR>;
 			reset-names = "pci";
 
+			/* ops_1_9_0 get_resources: bulk_get("vdda","vddpe-3v3")
+			 * fails -ENODEV (silently!) when the properties are
+			 * absent — root cause of every -61 field round. */
+			vdda-supply = <&vreg_l1f_0p88_ml>;
+			vddpe-3v3-supply = <&vph_pwr_ml>;
+
 			power-domains = <&gcc GCC_PCIE_0_GDSC>;
 
 			pinctrl-names = "default";
