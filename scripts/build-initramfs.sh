@@ -277,7 +277,10 @@ if [ "${#MODULES[@]}" -gt 0 ]; then
     command -v "$STRIP" >/dev/null 2>&1 || STRIP="strip"
     for m in "${MODULES[@]}"; do
         [ -n "$m" ] || continue
-        rel=${m##*out/}
+        # normalise to the standard kernel/<subdir>/<name>.ko layout no
+        # matter where the .ko came from (kernel build dir or a
+        # modules_install closure root)
+        rel="kernel/${m##*/kernel/}"
         d="$MODDIR/$(dirname "$rel")"
         mkdir -p "$d"
         # Strip debug sections: the kernel builds modules unstripped and the
