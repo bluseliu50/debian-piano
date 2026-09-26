@@ -28,6 +28,18 @@ mount -t proc proc /proc
 mount -t sysfs sysfs /sys
 mount -t configfs configfs /sys/kernel/config
 
+# --- previous boot's console log (ramoops/pstore) -----------------------------
+# The kernel mirrors its console into the stock ramoops region; after a hard
+# reset the log of the boot that died shows up here. Keep a copy in /run.
+mkdir -p /sys/fs/pstore
+if mount -t pstore pstore /sys/fs/pstore 2>/dev/null; then
+  if [ -n "$(ls /sys/fs/pstore 2>/dev/null)" ]; then
+    mkdir -p /run/pstore-prev
+    cp /sys/fs/pstore/* /run/pstore-prev/ 2>/dev/null
+    say "pstore: previous boot log kept in /run/pstore-prev"
+  fi
+fi
+
 # --- framebuffer beacon (bounded) -------------------------------------------
 # Alternate white/black fills of the whole splash framebuffer so userspace
 # progress is visible with zero driver dependencies: /dev/fb0 when simpledrm
@@ -159,6 +171,8 @@ else
   say "dropbear unusable ($(head -c 80 /run/dbk.log 2>/dev/null)); telnetd fallback"
 fi
 busybox telnetd -p 23 -l /bin/sh && say "telnetd up on :23" || say "WARN telnetd failed"
+# Evidence pull over the USB link: http://10.42.0.2:8080/<file under /run>
+busybox httpd -p 8080 -h /run && say "httpd serving /run on :8080" || say "WARN httpd failed"
 
 say "debug environment up: NCM 10.42.0.2, ssh root@10.42.0.2"
 

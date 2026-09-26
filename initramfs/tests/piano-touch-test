@@ -1,152 +1,243 @@
 #!/bin/sh
-# piano-touch-test — exercise the NT36532E touch driver and stream touch
-# frames to stdout (run over the USB-NCM SSH session or the console).
+# piano-touch-test — staged bring-up of the NT36532 THP touch path.
 #
-# Usage: piano-touch-test [--seconds N] [--max-frames N]
+# Usage: piano-touch-test [--stage N | --upto N] [--view MODE] [--seconds N]
 #
-# The ported sheng driver deliberately has kernel_input disabled: it only
-# publishes the THP proc interface (/proc/nvt_thp_raw|stream|status|stylus).
-# Each stream record is a 32-byte little-endian header
-#   magic u32, header_len u16, frame_len u16, sequence u64, timestamp_ns u64,
-#   header_crc u16, flags u16, firmware_magic u32
-# followed by frame_len bytes of event-buffer data. FLAG bit0 = frame valid,
-# bit1 = epoch boundary.
+# Stages (default: 0..4, stop at the first failure):
+#   0  preflight, read only: DT nodes, TLMM pin state (devmem, bounded),
+#      pstore of the previous boot, device tree copy in /run/fdt.dtb
+#   1  load pinctrl-sm8750 (mainline TLMM at 0xf100000, secure GPIOs
+#      excluded by gpio-reserved-ranges)
+#   2  load gpi + spi-geni-qcom; check that GPIO40-43 moved to qup1_se2
+#   3  load nt36532e_ts: chip ID, panel ID, firmware download, IRQ
+#   4  stream frames through piano-touch-view (MODE: stats, map, points,
+#      paint, dump; default stats for 10 s)
 #
-# Exit codes: 0 = at least one valid frame seen; 1 = driver not probed;
-# 2 = stream produced no frames.
+# Every stage start is written to /dev/kmsg, so after a hard reset the
+# pstore console of the next boot shows how far this got. Output is also
+# kept in /run/touch-test.log (http://10.42.0.2:8080/touch-test.log).
+#
+# Exit code: number of the failed stage + 10, 0 when all requested stages
+# passed, 2 on usage errors.
 
-SECONDS_TO_RUN=30
-MAX_FRAMES=0
+FIRST=0
+LAST=4
+VIEW=stats
+VIEW_SECONDS=10
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --seconds)    SECONDS_TO_RUN=${2-}; shift 2 ;;
-        --max-frames) MAX_FRAMES=${2-}; shift 2 ;;
-        -h|--help)    sed -n '2,8p' "$0"; exit 0 ;;
+        --stage)   FIRST=${2-}; LAST=${2-}; shift 2 ;;
+        --upto)    LAST=${2-}; shift 2 ;;
+        --view)    VIEW=${2-}; shift 2 ;;
+        --seconds) VIEW_SECONDS=${2-}; shift 2 ;;
+        -h|--help) sed -n '2,23p' "$0"; exit 0 ;;
         *) echo "piano-touch-test: unknown option: $1" >&2; exit 2 ;;
     esac
 done
+for n in "$FIRST" "$LAST" "$VIEW_SECONDS"; do
+    case "$n" in ''|*[!0-9]*) echo "piano-touch-test: numeric argument expected" >&2; exit 2 ;; esac
+done
 
-case "$SECONDS_TO_RUN" in ''|*[!0-9]*) echo "piano-touch-test: --seconds needs a number" >&2; exit 2 ;; esac
-case "$MAX_FRAMES"     in ''|*[!0-9]*) echo "piano-touch-test: --max-frames needs a number" >&2; exit 2 ;; esac
+LOG=/run/touch-test.log
+KVER=$(uname -r)
+DT=/proc/device-tree
+SPI_DT=$DT/soc/qcom,qupv3_1_geni_se@ac0000/spi@a88000
+TLMM_DEV=/sys/bus/platform/devices/f100000.pinctrl
+SPI_DEV=/sys/bus/platform/devices/a88000.spi
 
-if [ ! -e /proc/nvt_thp_status ]; then
-    echo "piano-touch-test: /proc/nvt_thp_status missing — loading modules"
-    gpi_rc=0
-    spi_rc=0
-    touch_rc=0
-    modprobe gpi 2>&1 || gpi_rc=$?
-    modprobe spi-geni-qcom 2>&1 || spi_rc=$?
-    modprobe nt36532e_ts 2>&1 || touch_rc=$?
-    echo "piano-touch-test: modprobe gpi rc=$gpi_rc spi-geni-qcom rc=$spi_rc nt36532e_ts rc=$touch_rc"
-    i=0
-    while [ $i -lt 10 ] && [ ! -e /proc/nvt_thp_status ]; do
-        sleep 1
-        i=$((i + 1))
-    done
+# TLMM pin registers: 0xf100000 + 0x1000 * pin (ctl), +4 (io). Reading past
+# 0xf202000 resets the SoC; the secure pins must never be read at all.
+TLMM_BASE=$((0x0f100000))
+TLMM_END=$((0x0f202000))
+RESERVED=" 36 37 38 39 48 49 50 51 74 "
+
+# Mirror everything into $LOG (busybox ash: no process substitution).
+if [ -z "${PIANO_TOUCH_TEST_LOGGED-}" ]; then
+    { PIANO_TOUCH_TEST_LOGGED=1 "$0" "$@" 2>&1; echo $? > /run/touch-test.rc; } \
+        | tee -a "$LOG"
+    exit "$(cat /run/touch-test.rc)"
 fi
 
-if [ ! -e /proc/nvt_thp_status ]; then
-    echo "piano-touch-test: touch driver did not probe."
-    echo "Do not load pinctrl-sm8750: its probe caused a device reboot."
-    echo "== loaded touch/SPI modules =="
-    grep -iE '(^| )(spi_geni|nt36532e_ts)( |$)' /proc/modules 2>/dev/null || true
-    echo "== SPI devices =="
-    for dev in /sys/bus/spi/devices/*; do
-        [ -e "$dev" ] || continue
-        printf '%s: ' "${dev##*/}"
-        cat "$dev/modalias" 2>/dev/null || echo "(no modalias)"
-    done
-    echo "== GENI SPI driver binding =="
-    ls -l /sys/bus/platform/drivers/geni_spi 2>/dev/null || echo "geni_spi driver directory missing"
-    echo "== deferred touch dependencies =="
-    if [ ! -r /sys/kernel/debug/devices_deferred ]; then
-        mount -t debugfs debugfs /sys/kernel/debug 2>/dev/null || true
+say() { echo "== $*"; echo "piano-touch-test: $*" > /dev/kmsg 2>/dev/null; }
+fail() { echo "FAIL: $*"; echo "piano-touch-test: FAIL $*" > /dev/kmsg 2>/dev/null; exit $((10 + STAGE)); }
+pass() { echo "PASS: stage $STAGE $*"; }
+
+pin_state() {
+    pin=$1
+    case "$RESERVED" in *" $pin "*) echo "gpio$pin: reserved, not read"; return ;; esac
+    addr=$((TLMM_BASE + pin * 0x1000))
+    if [ $((addr + 8)) -gt $TLMM_END ]; then
+        echo "gpio$pin: outside the TLMM window, not read"
+        return
     fi
-    if [ -r /sys/kernel/debug/devices_deferred ]; then
-        grep -E '(^spi0\.0|a88000\.spi|touch_avdd_vreg)' /sys/kernel/debug/devices_deferred || true
-    else
-        echo "devices_deferred unavailable"
-    fi
-    echo "== dmesg (touch/SPI/panel) =="
-    dmesg 2>/dev/null | grep -iE 'nv[t65]|geni|spi|touch|panel' | tail -50
-    echo "Hints: no SPI device points to the QUP/GPI path; spi0.0 waiting"
-    echo "for a panel or GPIO supplier needs that dependency resolved first."
-    exit 1
-fi
-
-echo "== /proc/nvt_thp_status (before) =="
-cat /proc/nvt_thp_status
-
-echo
-echo "== dmesg (touch-related) =="
-dmesg 2>/dev/null | grep -iE 'nv[t65]|touch|panel' | tail -20
-
-echo 1 > /proc/nvt_thp_raw 2>/dev/null || {
-    echo "piano-touch-test: cannot enable capture (/proc/nvt_thp_raw)" >&2
-    exit 2
+    ctl=$(devmem "$addr" 32) || return
+    io=$(devmem $((addr + 4)) 32) || return
+    c=$((ctl))
+    i=$((io))
+    printf 'gpio%-3d ctl=0x%08x io=0x%08x func=%d drive=%dmA pull=%s oe=%d in=%d out=%d\n' \
+        "$pin" "$c" "$i" $(((c >> 2) & 15)) $((((c >> 6) & 7) * 2 + 2)) \
+        "$(case $((c & 3)) in 0) echo none ;; 1) echo down ;; 2) echo keeper ;; 3) echo up ;; esac)" \
+        $(((c >> 9) & 1)) $((i & 1)) $(((i >> 1) & 1))
 }
 
-echo
-echo "== streaming touch frames for ${SECONDS_TO_RUN}s (touch the screen) =="
+pin_func() {
+    printf '%d' $((($(devmem $((TLMM_BASE + $1 * 0x1000)) 32) >> 2) & 15))
+}
 
-# Decode the byte stream: od emits 16 decimal bytes per line; the awk state
-# machine collects bytes, parses headers and skips frame payloads.
-timeout "$SECONDS_TO_RUN" cat /proc/nvt_thp_stream 2>/dev/null \
-    | od -v -An -tu1 \
-    | awk -v maxframes="$MAX_FRAMES" '
-        function be(b, o, n,   v, i) { v = 0; for (i = 0; i < n; i++) v = v * 256 + b[o + i]; return v }
-        function le(b, o, n,   v, i) { v = 0; for (i = n - 1; i >= 0; i--) v = v * 256 + b[o + i]; return v }
-        {
-            for (f = 1; f <= NF; f++) buf[nb++] = $f
-            while (1) {
-                if (!have_hdr) {
-                    if (nb - pos < 32) break
-                    magic = le(buf, pos, 4)
-                    if (magic != 827348046) { pos++; continue }   # 0x3150544e "NTP1"
-                    hlen = le(buf, pos + 4, 2)
-                    flen = le(buf, pos + 6, 2)
-                    seq  = le(buf, pos + 8, 8)
-                    ts   = le(buf, pos + 16, 8)
-                    crc  = le(buf, pos + 24, 2)
-                    flg  = le(buf, pos + 26, 2)
-                    fmag = le(buf, pos + 28, 4)
-                    have_hdr = 1
-                    pos += 32
-                    if (flen > 8192) { have_hdr = 0; continue }   # implausible: resync
-                    need = flen
-                }
-                if (nb - pos < need) break
-                ev0 = buf[pos]; ev1 = buf[pos + 1]; ev2 = buf[pos + 2]
-                printf "frame seq=%-6u flags=0x%04x %s ts=%ums crc=0x%04x fw=0x%08x ev=%02x %02x %02x\n", \
-                       seq, flg, ((flg % 2 == 1) ? "VALID " : "inval "), ts % 4294967295, crc, fmag, ev0, ev1, ev2
-                frames++
-                if ((flg % 2) == 1) valid++
-                if (maxframes > 0 && frames >= maxframes) { dump_all = 1; exit }
-                pos += need
-                have_hdr = 0
-                if (pos > 262144) {   # compact the buffer periodically
-                    rem = nb - pos
-                    for (i = 0; i < rem; i++) buf[i] = buf[pos + i]
-                    nb = rem; pos = 0
-                }
-            }
-        }
-        END {
-            if (!dump_all && frames == 0 && nb == 0 && !no_data) no_data = 1
-            printf "== summary: %d frames (%d valid) ==\n", frames, valid + 0
-            if (frames == 0) exit 3
-        }'
-rc=$?
+touch_pins() {
+    for p in 40 41 42 43 100 162; do pin_state "$p"; done
+}
 
-echo 0 > /proc/nvt_thp_raw 2>/dev/null
+module_loaded() {
+    grep -q "^$1 " /proc/modules
+}
 
-echo
-echo "== /proc/nvt_thp_status (after) =="
-cat /proc/nvt_thp_status
+load() {
+    if module_loaded "$(echo "$1" | tr - _)"; then
+        echo "$1 already loaded"
+        return 0
+    fi
+    modprobe "$1" || fail "modprobe $1 failed (rc=$?)"
+}
 
-case $rc in
-    0) exit 0 ;;
-    3) echo "piano-touch-test: no frames arrived (IRQ not firing or capture off)" >&2; exit 2 ;;
-    *) echo "piano-touch-test: stream reader stopped (rc=$rc)" >&2; exit 0 ;;
-esac
+wait_for() {
+    # wait_for SECONDS TEST...
+    t=$1
+    shift
+    while [ "$t" -gt 0 ]; do
+        "$@" && return 0
+        sleep 1
+        t=$((t - 1))
+    done
+    "$@"
+}
+
+touch_spi_device() {
+    for d in /sys/bus/spi/devices/*; do
+        [ -e "$d/of_node" ] || continue
+        case "$(readlink -f "$d/of_node")" in
+            */touchscreen@0) echo "$d"; return 0 ;;
+        esac
+    done
+    return 1
+}
+
+deferred() {
+    [ -r /sys/kernel/debug/devices_deferred ] \
+        || mount -t debugfs debugfs /sys/kernel/debug 2>/dev/null
+    grep -E 'spi|pinctrl|a00000|touch' /sys/kernel/debug/devices_deferred 2>/dev/null \
+        || echo "(no touch-path device deferred)"
+}
+
+stage0() {
+    say "stage 0: preflight (read only), kernel $KVER"
+    [ -d "$DT/soc/pinctrl@f100000" ] || fail "DTBO lacks /soc/pinctrl@f100000 (wrong dtbo_b?)"
+    echo "tlmm node: $(tr -d '\0' < "$DT/soc/pinctrl@f100000/compatible")"
+    printf 'gpio-reserved-ranges:'
+    od -An -tx1 -v "$DT/soc/pinctrl@f100000/gpio-reserved-ranges" | tr -s ' \n' ' '
+    echo
+    [ -d "$SPI_DT/touchscreen@0" ] || fail "DTBO lacks spi@a88000/touchscreen@0"
+    echo "stock novatek@0: $(tr -d '\0' < "$SPI_DT/novatek@0/status" 2>/dev/null)"
+    echo "touch firmware candidates: $(tr '\0' ' ' < "$SPI_DT/touchscreen@0/firmware-name")"
+    for f in novatek_nt36532_piano_fw_csot.bin novatek_nt36532_piano_fw_boe.bin; do
+        [ -s "/lib/firmware/novatek/$f" ] || fail "missing /lib/firmware/novatek/$f"
+    done
+    for m in pinctrl-sm8750 gpi spi-geni-qcom nt36532e_ts; do
+        grep -q "/$m.ko:" "/lib/modules/$KVER/modules.dep" 2>/dev/null \
+            || fail "module $m not in the image"
+    done
+    cp /sys/firmware/fdt /run/fdt.dtb 2>/dev/null && echo "device tree copy: /run/fdt.dtb"
+    if [ -d /run/pstore-prev ]; then
+        echo "previous boot pstore: $(ls /run/pstore-prev | tr '\n' ' ')"
+    else
+        echo "previous boot pstore: none"
+    fi
+    echo "TLMM pin state before any driver:"
+    touch_pins | tee /run/tlmm-pre.txt
+    pass
+}
+
+stage1() {
+    say "stage 1: loading pinctrl-sm8750 (TLMM probe)"
+    if [ -e "$TLMM_DEV/driver" ]; then
+        echo "TLMM already bound"
+    else
+        sleep 1
+        load pinctrl-sm8750
+        wait_for 5 test -e "$TLMM_DEV/driver" \
+            || fail "f100000.pinctrl did not bind: $(dmesg | grep -i f100000 | tail -3)"
+    fi
+    echo "bound to: $(basename "$(readlink "$TLMM_DEV/driver")")"
+    ls -d "$TLMM_DEV"/gpiochip* 2>/dev/null
+    dmesg | grep -iE 'f100000|msm_pinctrl|pinctrl-msm' | tail -5
+    echo "TLMM pin state after probe (expected unchanged):"
+    touch_pins
+    pass
+}
+
+stage2() {
+    say "stage 2: loading gpi + spi-geni-qcom"
+    [ -e "$TLMM_DEV/driver" ] || fail "TLMM not bound; run stage 1 first"
+    load gpi
+    load spi-geni-qcom
+    wait_for 5 test -e "$SPI_DEV/driver" || { deferred; fail "a88000.spi did not bind"; }
+    dev=$(wait_for 3 touch_spi_device) || fail "no SPI device for touchscreen@0"
+    echo "touch SPI device: ${dev##*/} ($(cat "$dev/modalias"))"
+    for p in 40 41 42 43; do
+        if [ "$(pin_func $p)" != 1 ]; then
+            echo "gpio$p not on qup1_se2: rebinding a88000.spi"
+            echo a88000.spi > /sys/bus/platform/drivers/geni_spi/unbind
+            echo a88000.spi > /sys/bus/platform/drivers/geni_spi/bind
+            sleep 1
+            break
+        fi
+    done
+    touch_pins
+    for p in 40 41 42 43; do
+        [ "$(pin_func $p)" = 1 ] || fail "gpio$p mux is $(pin_func $p), expected 1 (qup1_se2)"
+    done
+    pass "(SPI pins on qup1_se2)"
+}
+
+stage3() {
+    say "stage 3: loading nt36532e_ts (chip ID, firmware download)"
+    touch_spi_device > /dev/null || fail "no SPI device for touchscreen@0; run stage 2 first"
+    load nt36532e_ts
+    if ! wait_for 10 test -e /proc/nvt_thp_status; then
+        deferred
+        dmesg | grep -iE 'nvt|nt36|touch' | tail -30
+        fail "touch driver did not probe"
+    fi
+    wait_for 15 grep -q '^irq_enabled: 1' /proc/nvt_thp_status
+    dmesg | grep -iE 'NVT-ts|nt36' | tail -30
+    echo "--- /proc/nvt_thp_status"
+    cat /proc/nvt_thp_status
+    touch_pins
+    grep -q '^irq_enabled: 1' /proc/nvt_thp_status \
+        || fail "firmware download did not complete (IRQ still off)"
+    sleep 1
+    irqs=$(sed -n 's/^irqs: //p' /proc/nvt_thp_status)
+    echo "touch interrupts so far: $irqs"
+    pass
+}
+
+stage4() {
+    say "stage 4: THP frames ($VIEW, ${VIEW_SECONDS}s)"
+    [ -e /proc/nvt_thp_status ] || fail "touch driver not loaded; run stage 3 first"
+    piano-touch-view "$VIEW" --seconds "$VIEW_SECONDS"
+    rc=$?
+    cat /proc/nvt_thp_status
+    [ "$rc" = 0 ] || fail "no frame with a valid checksum (rc=$rc)"
+    pass
+}
+
+STAGE=$FIRST
+while [ "$STAGE" -le "$LAST" ]; do
+    case "$STAGE" in
+        0) stage0 ;; 1) stage1 ;; 2) stage2 ;; 3) stage3 ;; 4) stage4 ;;
+        *) echo "piano-touch-test: no stage $STAGE" >&2; exit 2 ;;
+    esac
+    STAGE=$((STAGE + 1))
+done
+exit 0
