@@ -26,6 +26,9 @@
 #   --module FILE           installs a kernel module into
 #                           /lib/modules/<--kernel-version>/
 #   --firmware-dir DIR      copies DIR/novatek/*.bin to /lib/firmware/novatek/
+#   --touch-view FILE       installs the static THP frame viewer
+#                           (scripts/build-touch-view.sh) as
+#                           /usr/bin/piano-touch-view
 #
 # Any executable under initramfs/tests/ is installed into /usr/bin
 # (piano-tests, piano-touch-test, piano-display-test, piano-collect).
@@ -50,6 +53,7 @@ DROPBEAR_DIR=""
 DROPBEAR_TREE=""
 IW_TREE=""
 PD_LOCATOR=""
+TOUCH_VIEW=""
 APLAY_TREE=""
 AUTHORIZED_KEYS=""
 GENERATE_KEY_OUT=""
@@ -67,6 +71,7 @@ while [ $# -gt 0 ]; do
         --dropbear-tree)       DROPBEAR_TREE=${2-}; shift 2 ;;
         --iw-tree)             IW_TREE=${2-}; shift 2 ;;
         --pd-locator)          PD_LOCATOR=${2-}; shift 2 ;;
+        --touch-view)          TOUCH_VIEW=${2-}; shift 2 ;;
         --aplay-tree)          APLAY_TREE=${2-}; shift 2 ;;
         --output)              OUTPUT=${2-}; shift 2 ;;
         --authorized-keys)     AUTHORIZED_KEYS=${2-}; shift 2 ;;
@@ -206,6 +211,15 @@ if [ -n "$PD_LOCATOR" ]; then
         || die "staged pd-locator is not an arm64 ELF: $PD_LOCATOR"
     install -m 0755 "$PD_LOCATOR" "$STAGING/usr/sbin/piano-pd-locator"
     echo "build-initramfs: installed piano-pd-locator from $PD_LOCATOR"
+fi
+
+# --- piano-touch-view (our static THP frame viewer) --------------------------
+if [ -n "$TOUCH_VIEW" ]; then
+    [ -s "$TOUCH_VIEW" ] || die "touch-view binary missing: $TOUCH_VIEW"
+    file "$TOUCH_VIEW" | grep -q 'ARM aarch64.*statically linked' \
+        || die "staged touch-view is not a static arm64 ELF: $TOUCH_VIEW"
+    install -m 0755 "$TOUCH_VIEW" "$STAGING/usr/bin/piano-touch-view"
+    echo "build-initramfs: installed piano-touch-view from $TOUCH_VIEW"
 fi
 
 # --- iw (WLAN nl80211 client) ------------------------------------------------
